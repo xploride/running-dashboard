@@ -79,7 +79,74 @@ function getPaceZone(pace) {
   if (!pace||pace<=0) return null
   return PACE_ZONES.find(z => pace>=z.min && pace<z.max) || PACE_ZONES[0]
 }
-// GPX · Apple Health XML · KML → [{lat,lng}]
+function formatDuration(secs) {
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = Math.floor(secs % 60)
+  return h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`
+}
+
+// GPX 전용 파서 — 좌표 + 고도·시간·심박수 메타데이터 추출
+function parseGPXFile(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, 'application/xml')
+  if (doc.querySelector('parsererror')) throw new Error('GPX 파싱 실패. 올바른 GPX 파일인지 확인하세요.')
+
+  const nodes = doc.querySelectorAll('trkpt, wpt, rtept')
+  if (nodes.length === 0) throw new Error('GPX에서 트랙 포인트를 찾을 수 없습니다.')
+
+  const points = Array.from(nodes).map(pt => {
+    const lat = parseFloat(pt.getAttribute('lat'))
+    const lng = parseFloat(pt.getAttribute('lon'))
+    const ele = parseFloat(pt.querySelector('ele')?.textContent)
+    const time = pt.querySelector('time')?.textContent?.trim() || null
+    // 심박수: Garmin gpxtpx:hr, Polar ns3:hr, 일반 hr 등 네임스페이스 무관하게 탐색
+    const hrEls = pt.getElementsByTagNameNS('*', 'hr')
+    const hr = hrEls.length > 0 ? parseInt(hrEls[0].textContent) : null
+    return {
+      lat, lng,
+      ele: isNaN(ele) ? null : ele,
+      time,
+      hr: hr && !isNaN(hr) && hr > 0 ? hr : null,
+    }
+  }).filter(p => !isNaN(p.lat) && !isNaN(p.lng) && Math.abs(p.lat) <= 90 && Math.abs(p.lng) <= 180)
+
+  if (points.length < 2) throw new Error('유효한 GPS 좌표가 2개 미만입니다.')
+
+  // 트랙 이름
+  const nameEl = doc.querySelector('trk > name, rte > name, metadata > name')
+  const name = nameEl?.textContent?.trim() || null
+
+  // 시간 범위 → 총 소요 시간
+  const times = points.filter(p => p.time).map(p => new Date(p.time).getTime()).filter(t => !isNaN(t))
+  const startMs = times.length ? Math.min(...times) : null
+  const endMs   = times.length ? Math.max(...times) : null
+  const duration = startMs && endMs ? Math.round((endMs - startMs) / 1000) : null
+  const dateStr  = startMs ? new Date(startMs).toLocaleDateString('ko-KR', { year: 'numeric', month: 'short', day: 'numeric' }) : null
+
+  // 누적 고도 상승 (1m 노이즈 필터링)
+  let elevGain = 0
+  const elePts = points.filter(p => p.ele !== null)
+  for (let i = 1; i < elePts.length; i++) {
+    const d = elePts[i].ele - elePts[i - 1].ele
+    if (d > 1) elevGain += d
+  }
+
+  // 평균 심박수
+  const hrPts = points.filter(p => p.hr)
+  const avgHR = hrPts.length ? Math.round(hrPts.reduce((s, p) => s + p.hr, 0) / hrPts.length) : null
+
+  return {
+    coords: points,
+    meta: {
+      name, dateStr, duration,
+      elevGain: Math.round(elevGain),
+      avgHR,
+      pointCount: points.length,
+      hasElevation: elePts.length > 0,
+      hasHR: hrPts.length > 0,
+    },
+  }
+}
+
+// Apple Health XML · KML (GPX가 아닌 경우) → [{lat,lng}]
 function parseXMLtoGPS(xmlText) {
   const doc = new DOMParser().parseFromString(xmlText, 'application/xml')
   if (doc.querySelector('parsererror')) throw new Error('XML 파싱 오류: 올바른 XML 파일인지 확인하세요.')
@@ -653,7 +720,7 @@ function AITab({ runs }) {
 /* ─────────────────────────────────────────
    MAP TAB (Apple Health style)
 ───────────────────────────────────────── */
-function MapTab({ active, uploadedGPS, onUploadConsumed }) {
+function MapTab({ active, uploadedGPS, gpxMeta, onUploadConsumed }) {
   const mapRef=useRef(null),mapObj=useRef(null),bgLineRef=useRef(null)
   const gradSegsRef=useRef([]),lastVisibleRef=useRef(-1)
   const runnerRef=useRef(null),rafId=useRef(null)
@@ -790,8 +857,9 @@ function MapTab({ active, uploadedGPS, onUploadConsumed }) {
             {ANIM_SPEEDS.map((s,i)=><button key={i} onClick={()=>setSpeedIdx(i)} style={{background:speedIdx===i?'#30D158':C.card2,border:'none',borderRadius:8,width:36,height:36,color:speedIdx===i?'#000':C.muted,cursor:'pointer',fontSize:12,fontWeight:800,WebkitTapHighlightColor:'transparent'}}>{s.label}</button>)}
           </div>
         </div>
-        <div style={{display:'flex',gap:0,marginTop:12,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
-          {[{l:'TOTAL',v:`${routeKm} km`,c:'#30D158'},{l:'POINTS',v:`${coords.length}`,c:C.blue},{l:'DONE',v:`${kmDone} km`,c:'#FFD60A'}].map(s=>(
+        {/* 기본 경로 요약 */}
+        <div style={{display:'flex',marginTop:12,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+          {[{l:'TOTAL',v:`${routeKm} km`,c:'#30D158'},{l:'PTS',v:`${coords.length}`,c:C.blue},{l:'DONE',v:`${kmDone} km`,c:'#FFD60A'}].map(s=>(
             <div key={s.l} style={{flex:1,textAlign:'center'}}>
               <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase'}}>{s.l}</div>
               <div style={{fontSize:15,fontWeight:900,color:s.c,letterSpacing:'-0.5px'}}>{s.v}</div>
@@ -799,6 +867,48 @@ function MapTab({ active, uploadedGPS, onUploadConsumed }) {
           ))}
         </div>
       </div>}
+
+      {/* GPX 메타데이터 카드 */}
+      {gpxMeta && coords.length > 0 && (
+        <div style={{background:C.card,borderRadius:14,padding:'14px 16px',border:`1px solid ${C.lime}33`}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+            <div style={{fontSize:13,fontWeight:900,color:C.white,letterSpacing:'-0.3px'}}>
+              {gpxMeta.name || 'GPX 경로'}
+            </div>
+            <div style={{fontSize:10,fontWeight:700,color:C.lime,letterSpacing:'0.12em',textTransform:'uppercase',background:`${C.lime}18`,borderRadius:20,padding:'3px 9px'}}>GPX</div>
+          </div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:14}}>
+            {gpxMeta.dateStr && (
+              <div>
+                <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>DATE</div>
+                <div style={{fontSize:13,fontWeight:700,color:C.white}}>{gpxMeta.dateStr}</div>
+              </div>
+            )}
+            {gpxMeta.duration && (
+              <div>
+                <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>TIME</div>
+                <div style={{fontSize:13,fontWeight:700,color:C.white}}>{formatDuration(gpxMeta.duration)}</div>
+              </div>
+            )}
+            {gpxMeta.hasElevation && gpxMeta.elevGain > 0 && (
+              <div>
+                <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>ELEV ↑</div>
+                <div style={{fontSize:13,fontWeight:700,color:'#30D158'}}>{gpxMeta.elevGain}m</div>
+              </div>
+            )}
+            {gpxMeta.hasHR && gpxMeta.avgHR && (
+              <div>
+                <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>AVG HR</div>
+                <div style={{fontSize:13,fontWeight:700,color:C.red}}>❤ {gpxMeta.avgHR}bpm</div>
+              </div>
+            )}
+            <div>
+              <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>POINTS</div>
+              <div style={{fontSize:13,fontWeight:700,color:C.muted}}>{gpxMeta.pointCount.toLocaleString()}</div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -928,17 +1038,28 @@ export default function App() {
   const [celebRun,    setCelebRun]    = useState(null)
   const [error,       setError]       = useState('')
   const [uploadedGPS, setUploadedGPS] = useState(null)
+  const [gpxMeta,     setGpxMeta]     = useState(null)
   const fileInputRef = useRef(null)
 
-  const handleXMLUpload = (e) => {
+  const handleGPXUpload = (e) => {
     const file = e.target.files[0]
     if (!file) return
     const reader = new FileReader()
     reader.onload = (evt) => {
       try {
-        const pts = parseXMLtoGPS(evt.target.result)
-        if (pts.length < 2) throw new Error('좌표가 2개 미만입니다.')
-        setUploadedGPS(JSON.stringify(pts.map(p=>[p.lat,p.lng])))
+        const isGPX = /\.(gpx)$/i.test(file.name)
+        if (isGPX) {
+          // GPX: 좌표 + 메타데이터 풀 파싱
+          const { coords, meta } = parseGPXFile(evt.target.result)
+          setUploadedGPS(JSON.stringify(coords.map(p => [p.lat, p.lng])))
+          setGpxMeta(meta)
+        } else {
+          // XML / KML: 좌표만 파싱
+          const pts = parseXMLtoGPS(evt.target.result)
+          if (pts.length < 2) throw new Error('좌표가 2개 미만입니다.')
+          setUploadedGPS(JSON.stringify(pts.map(p => [p.lat, p.lng])))
+          setGpxMeta(null)
+        }
         setTab(2)
         setError('')
       } catch (err) { setError(err.message) }
@@ -985,10 +1106,10 @@ export default function App() {
         <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:C.white}}>RUNNING</div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
           {error&&<div style={{fontSize:11,color:C.red,fontWeight:700,maxWidth:140,textOverflow:'ellipsis',overflow:'hidden',whiteSpace:'nowrap'}} title={error}>{error}</div>}
-          {/* XML 업로드 */}
-          <input ref={fileInputRef} type="file" accept=".gpx,.xml,.kml" onChange={handleXMLUpload} style={{display:'none'}}/>
+          {/* GPX / XML 업로드 */}
+          <input ref={fileInputRef} type="file" accept=".gpx,.xml,.kml" onChange={handleGPXUpload} style={{display:'none'}}/>
           <button onClick={()=>fileInputRef.current?.click()} style={{background:'none',border:`1px solid ${C.lime}44`,borderRadius:20,padding:'5px 12px',color:C.lime,fontSize:11,fontWeight:800,cursor:'pointer',WebkitTapHighlightColor:'transparent',letterSpacing:'0.1em',display:'flex',alignItems:'center',gap:4}}>
-            <span style={{fontSize:13}}>↑</span>XML
+            <span style={{fontSize:13}}>↑</span>GPX
           </button>
           <button onClick={fetchRuns} style={{background:'none',border:`1px solid ${C.border}`,borderRadius:20,padding:'5px 12px',color:C.muted,fontSize:12,fontWeight:700,cursor:'pointer',WebkitTapHighlightColor:'transparent',letterSpacing:'0.06em'}}>↻</button>
         </div>
@@ -1004,7 +1125,7 @@ export default function App() {
           <>
             {tab===0&&<HomeTab runs={runs} onAdd={()=>setShowAdd(true)}/>}
             {tab===1&&<RecordsTab runs={runs} onAdd={()=>setShowAdd(true)} onDelete={handleDelete}/>}
-            <div style={{display:tab===2?'block':'none'}}><MapTab active={tab===2} uploadedGPS={uploadedGPS} onUploadConsumed={()=>setUploadedGPS(null)}/></div>
+            <div style={{display:tab===2?'block':'none'}}><MapTab active={tab===2} uploadedGPS={uploadedGPS} gpxMeta={gpxMeta} onUploadConsumed={()=>{ setUploadedGPS(null) }}/></div>
             {tab===3&&<StatsTab runs={runs}/>}
             {tab===4&&<AITab runs={runs}/>}
             {tab===5&&<SettingsTab/>}
