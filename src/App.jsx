@@ -146,6 +146,59 @@ function parseGPXFile(xmlText) {
   }
 }
 
+// Apple Health export.xml → [{date,distance,pace,hr,calories,note}]
+function parseAppleHealthXML(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, 'application/xml')
+  if (doc.querySelector('parsererror')) throw new Error('XML 파싱 실패. 올바른 export.xml 파일인지 확인하세요.')
+  if (!doc.querySelector('HealthData')) throw new Error('Apple Health export.xml 형식이 아닙니다.\n건강 앱 → 프로필 → 모든 건강 데이터 내보내기에서 export.xml을 사용하세요.')
+
+  const workoutEls = doc.querySelectorAll('Workout[workoutActivityType="HKWorkoutActivityTypeRunning"]')
+  if (workoutEls.length === 0) throw new Error('러닝(Running) 운동 기록을 찾을 수 없습니다.')
+
+  const runs = Array.from(workoutEls).map(w => {
+    const startDate = w.getAttribute('startDate') || ''
+    const date = startDate.slice(0, 10)
+    if (!date || date.length < 10) return null
+
+    // 거리 (km 변환)
+    let dist = parseFloat(w.getAttribute('totalDistance'))
+    const dUnit = (w.getAttribute('totalDistanceUnit') || 'km').toLowerCase()
+    if (dUnit === 'm')   dist /= 1000
+    if (dUnit === 'mi')  dist *= 1.60934
+    if (isNaN(dist) || dist <= 0) return null
+    dist = parseFloat(dist.toFixed(2))
+
+    // 시간(분) → 페이스(분/km)
+    let dur = parseFloat(w.getAttribute('duration'))
+    const tUnit = (w.getAttribute('durationUnit') || 'min').toLowerCase()
+    if (tUnit === 's' || tUnit === 'sec') dur /= 60
+    const pace = (dur > 0 && dist > 0) ? parseFloat((dur / dist).toFixed(2)) : 0
+
+    // 칼로리
+    let cal = Math.round(parseFloat(w.getAttribute('totalEnergyBurned')) || 0)
+    if (isNaN(cal)) cal = 0
+
+    // 평균 심박수 (WorkoutStatistics)
+    const hrEl = w.querySelector('WorkoutStatistics[type="HKQuantityTypeIdentifierHeartRate"]')
+    let hr = Math.round(parseFloat(hrEl?.getAttribute('average') || '0'))
+    if (isNaN(hr)) hr = 0
+
+    const source = w.getAttribute('sourceName') || 'Apple Watch'
+    return { date, distance: dist, pace, hr, calories: cal, note: source }
+  }).filter(Boolean)
+
+  if (runs.length === 0) throw new Error('유효한 러닝 기록을 찾을 수 없습니다.')
+  runs.sort((a, b) => a.date.localeCompare(b.date))
+
+  const totalKm = parseFloat(runs.reduce((s, r) => s + r.distance, 0).toFixed(1))
+  return {
+    runs,
+    total: runs.length,
+    dateRange: { from: runs[0].date, to: runs[runs.length - 1].date },
+    totalKm,
+  }
+}
+
 // Apple Health XML · KML (GPX가 아닌 경우) → [{lat,lng}]
 function parseXMLtoGPS(xmlText) {
   const doc = new DOMParser().parseFromString(xmlText, 'application/xml')
@@ -979,43 +1032,181 @@ function AddRunModal({ onSave, onClose }) {
 /* ─────────────────────────────────────────
    SETTINGS TAB
 ───────────────────────────────────────── */
-function SettingsTab() {
-  const [claudeKey,  setClaudeKey]  = useState(()=>localStorage.getItem('claudeKey')||'')
-  const save = k => { setClaudeKey(k); localStorage.setItem('claudeKey',k) }
+function SettingsTab({ onImportRuns, onGPXLoad }) {
+  const [claudeKey,     setClaudeKey]     = useState(()=>localStorage.getItem('claudeKey')||'')
+  const [healthPreview, setHealthPreview] = useState(null)   // {runs,total,dateRange,totalKm}
+  const [importing,     setImporting]     = useState(false)
+  const [importResult,  setImportResult]  = useState(null)   // {added,total}
+  const [fileError,     setFileError]     = useState('')
+  const [parsing,       setParsing]       = useState(false)
+
+  const healthRef = useRef(null)
+  const gpxRef    = useRef(null)
+
+  const saveKey = k => { setClaudeKey(k); localStorage.setItem('claudeKey', k) }
+
+  /* Apple Health XML 선택 */
+  const handleHealthFile = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    setFileError(''); setHealthPreview(null); setImportResult(null); setParsing(true)
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      try   { setHealthPreview(parseAppleHealthXML(evt.target.result)) }
+      catch (err) { setFileError(err.message) }
+      finally     { setParsing(false) }
+    }
+    reader.onerror = () => { setFileError('파일 읽기 실패'); setParsing(false) }
+    reader.readAsText(file, 'UTF-8')
+    e.target.value = ''
+  }
+
+  /* GPX 파일 선택 */
+  const handleGPXFile = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    setFileError('')
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      try   { const { coords, meta } = parseGPXFile(evt.target.result); onGPXLoad(coords, meta) }
+      catch (err) { setFileError(err.message) }
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
+  /* 가져오기 확인 */
+  const confirmImport = async () => {
+    if (!healthPreview) return
+    setImporting(true)
+    try {
+      const added = await onImportRuns(healthPreview.runs)
+      setImportResult({ added, total: healthPreview.total })
+      setHealthPreview(null)
+    } catch (err) { setFileError(err.message) }
+    finally { setImporting(false) }
+  }
+
+  const sBtn = (bg='#C8F549', fg='#000') => ({
+    width:'100%', background:bg, border:'none', borderRadius:12,
+    padding:'13px 16px', color:fg, fontSize:12, fontWeight:900,
+    cursor:'pointer', WebkitTapHighlightColor:'transparent',
+    letterSpacing:'0.06em', textTransform:'uppercase',
+  })
 
   return (
     <div style={{padding:'0 20px',display:'flex',flexDirection:'column',gap:16}}>
       <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:4}}>SETTINGS</div>
 
+      {/* ── Apple Health XML 가져오기 ── */}
+      <div style={{background:C.card,borderRadius:16,padding:16}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+          <span style={{fontSize:18}}>🍎</span>
+          <span style={{fontSize:14,fontWeight:900,color:C.white}}>Apple Health 가져오기</span>
+        </div>
+        <div style={{fontSize:12,color:C.muted,marginBottom:14,lineHeight:1.7}}>
+          건강 앱 → 프로필 아이콘 → 모든 건강 데이터 내보내기<br/>
+          압축 해제 후 <code style={{color:C.lime,fontSize:11}}>export.xml</code> 파일을 선택하면<br/>
+          모든 러닝 기록을 대시보드로 자동 가져옵니다.
+        </div>
+        <input ref={healthRef} type="file" accept=".xml" onChange={handleHealthFile} style={{display:'none'}}/>
+        <button onClick={()=>{setFileError('');setImportResult(null);healthRef.current?.click()}}
+          disabled={parsing}
+          style={sBtn(parsing ? C.card2 : C.lime, parsing ? C.muted : '#000')}>
+          {parsing ? '⏳ 파싱 중...' : '📂 export.xml 선택'}
+        </button>
+
+        {fileError && (
+          <div style={{marginTop:10,background:`${C.red}18`,borderRadius:10,padding:'10px 14px',color:C.red,fontSize:12,lineHeight:1.6,whiteSpace:'pre-wrap'}}>
+            {fileError}
+          </div>
+        )}
+
+        {/* 미리보기 카드 */}
+        {healthPreview && (
+          <div style={{marginTop:14,background:C.card2,borderRadius:12,padding:14}}>
+            <div style={{fontSize:13,fontWeight:900,color:C.lime,marginBottom:12}}>
+              🏃 {healthPreview.total.toLocaleString()}개 러닝 기록 발견
+            </div>
+            <div style={{display:'flex',gap:20,marginBottom:12,flexWrap:'wrap'}}>
+              <div>
+                <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>기간</div>
+                <div style={{fontSize:12,fontWeight:700,color:C.white}}>{healthPreview.dateRange.from}<br/> ~ {healthPreview.dateRange.to}</div>
+              </div>
+              <div>
+                <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>총 거리</div>
+                <div style={{fontSize:20,fontWeight:900,color:C.lime,letterSpacing:'-1px'}}>{healthPreview.totalKm} <span style={{fontSize:11,color:C.muted}}>km</span></div>
+              </div>
+            </div>
+
+            {/* 최근 5개 미리보기 */}
+            <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,marginBottom:12}}>
+              <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase',marginBottom:8}}>최근 기록 미리보기</div>
+              {healthPreview.runs.slice(-5).reverse().map((r,i)=>(
+                <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'5px 0',borderBottom:`1px solid ${C.border}`}}>
+                  <span style={{fontSize:11,color:C.muted}}>{r.date}</span>
+                  <span style={{fontSize:13,fontWeight:800,color:C.white}}>{r.distance}km</span>
+                  <span style={{fontSize:12,fontWeight:700,color:C.lime}}>{paceToStr(r.pace)}/km</span>
+                  {r.hr>0&&<span style={{fontSize:11,color:C.red}}>❤ {r.hr}</span>}
+                </div>
+              ))}
+              {healthPreview.total > 5 && (
+                <div style={{fontSize:11,color:C.dim,textAlign:'center',paddingTop:8}}>... 외 {healthPreview.total-5}개</div>
+              )}
+            </div>
+
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={()=>setHealthPreview(null)}
+                style={{...sBtn(C.card,C.muted),flex:1,border:`1px solid ${C.border}`}}>취소</button>
+              <button onClick={confirmImport} disabled={importing}
+                style={{...sBtn('#30D158','#000'),flex:2,opacity:importing?0.7:1}}>
+                {importing ? '저장 중...' : `${healthPreview.total.toLocaleString()}개 가져오기`}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {importResult && (
+          <div style={{marginTop:12,background:'#30D15820',border:'1px solid #30D15840',borderRadius:10,padding:'12px 14px'}}>
+            <div style={{fontSize:14,fontWeight:900,color:'#30D158'}}>✅ 가져오기 완료</div>
+            <div style={{fontSize:12,color:C.muted,marginTop:4}}>
+              {importResult.added}개 새 기록 추가
+              {importResult.total - importResult.added > 0 &&
+                ` · ${importResult.total - importResult.added}개는 이미 존재`}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── GPX 경로 지도에 표시 ── */}
+      <div style={{background:C.card,borderRadius:16,padding:16}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+          <span style={{fontSize:18}}>🗺️</span>
+          <span style={{fontSize:14,fontWeight:900,color:C.white}}>GPX 경로 지도에 표시</span>
+        </div>
+        <div style={{fontSize:12,color:C.muted,marginBottom:14,lineHeight:1.7}}>
+          내보내기 압축 해제 → <code style={{color:C.lime,fontSize:11}}>workout-routes/</code> 폴더<br/>
+          GPX 파일을 선택하면 지도 탭에서 경로와 통계를 확인합니다.
+        </div>
+        <input ref={gpxRef} type="file" accept=".gpx" onChange={handleGPXFile} style={{display:'none'}}/>
+        <button onClick={()=>{setFileError('');gpxRef.current?.click()}} style={sBtn()}>
+          📍 GPX 파일 선택 → 지도로 이동
+        </button>
+      </div>
+
+      {/* ── Claude API Key ── */}
       <div style={{background:C.card,borderRadius:16,padding:16}}>
         <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:4}}>CLAUDE API KEY</div>
         <div style={{fontSize:12,color:C.dim,marginBottom:10}}>AI 코치 기능에 사용 · 로컬 저장</div>
-        <input type="password" value={claudeKey} onChange={e=>save(e.target.value)} placeholder="sk-ant-..." style={inp}/>
-        {claudeKey&&<button onClick={()=>save('')} style={{marginTop:10,background:'none',border:`1px solid ${C.border}`,borderRadius:8,padding:'7px 14px',color:C.muted,cursor:'pointer',fontSize:12,fontWeight:700,WebkitTapHighlightColor:'transparent'}}>REMOVE KEY</button>}
+        <input type="password" value={claudeKey} onChange={e=>saveKey(e.target.value)} placeholder="sk-ant-..." style={inp}/>
+        {claudeKey&&<button onClick={()=>saveKey('')} style={{marginTop:10,background:'none',border:`1px solid ${C.border}`,borderRadius:8,padding:'7px 14px',color:C.muted,cursor:'pointer',fontSize:12,fontWeight:700,WebkitTapHighlightColor:'transparent'}}>REMOVE KEY</button>}
       </div>
 
-      <div style={{background:C.card,borderRadius:16,padding:16}}>
-        <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:10}}>MAP</div>
-        <div style={{display:'flex',flexDirection:'column',gap:6,fontSize:13}}>
-          <div style={{display:'flex',justifyContent:'space-between'}}>
-            <span style={{color:C.muted}}>Provider</span>
-            <span style={{color:C.white,fontWeight:700}}>Leaflet + OSM</span>
-          </div>
-          <div style={{display:'flex',justifyContent:'space-between'}}>
-            <span style={{color:C.muted}}>Tiles</span>
-            <span style={{color:C.white,fontWeight:700}}>CartoDB Dark</span>
-          </div>
-          <div style={{display:'flex',justifyContent:'space-between'}}>
-            <span style={{color:C.muted}}>API Key</span>
-            <span style={{color:'#30D158',fontWeight:700}}>Not required ✓</span>
-          </div>
-        </div>
-      </div>
-
+      {/* ── 앱 정보 ── */}
       <div style={{background:C.card,borderRadius:16,padding:16}}>
         <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:10}}>ABOUT</div>
         <div style={{display:'flex',flexDirection:'column',gap:6,fontSize:13}}>
-          {[['App','Running Dashboard'],['Version','2.0.0'],['Data','JSONBin'],['AI Model','Claude Sonnet 4.6']].map(([k,v])=>(
+          {[['App','Running Dashboard'],['Version','2.1.0'],['Data','JSONBin'],['Map','Leaflet + OSM'],['AI','Claude Sonnet 4.6']].map(([k,v])=>(
             <div key={k} style={{display:'flex',justifyContent:'space-between'}}>
               <span style={{color:C.muted}}>{k}</span>
               <span style={{color:C.white,fontWeight:700}}>{v}</span>
@@ -1098,6 +1289,23 @@ export default function App() {
     await saveRuns(newRuns); setRuns(newRuns)
   }
 
+  // Apple Health import — 중복 제거(날짜+거리 반올림 키) 후 병합
+  const handleImportRuns = async (importedRuns) => {
+    const existing = new Set(runs.map(r=>`${r.date}_${Math.round(r.distance*10)}`))
+    const newOnly  = importedRuns.filter(r=>!existing.has(`${r.date}_${Math.round(r.distance*10)}`))
+    const merged   = [...runs, ...newOnly].sort((a,b)=>a.date.localeCompare(b.date))
+    await saveRuns(merged)
+    setRuns(merged)
+    return newOnly.length
+  }
+
+  // 설정 탭에서 GPX 업로드
+  const handleGPXFromSettings = (coords, meta) => {
+    setUploadedGPS(JSON.stringify(coords.map(p=>[p.lat,p.lng])))
+    setGpxMeta(meta)
+    setTab(2)
+  }
+
   return (
     <div style={{minHeight:'100dvh',background:C.bg,color:C.white,fontFamily:'-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif',display:'flex',flexDirection:'column',paddingBottom:'calc(62px + env(safe-area-inset-bottom))'}}>
 
@@ -1128,7 +1336,7 @@ export default function App() {
             <div style={{display:tab===2?'block':'none'}}><MapTab active={tab===2} uploadedGPS={uploadedGPS} gpxMeta={gpxMeta} onUploadConsumed={()=>{ setUploadedGPS(null) }}/></div>
             {tab===3&&<StatsTab runs={runs}/>}
             {tab===4&&<AITab runs={runs}/>}
-            {tab===5&&<SettingsTab/>}
+            {tab===5&&<SettingsTab onImportRuns={handleImportRuns} onGPXLoad={handleGPXFromSettings}/>}
           </>
         )}
       </div>
