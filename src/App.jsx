@@ -1,23 +1,23 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Loader } from '@googlemaps/js-api-loader'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts'
 
 /* ── 상수 ── */
-const BIN_ID = '6a212290da38895dfe84f187'
-const API_KEY = '$2a$10$S4L4AI6Ixu.mcfT/xS3q4.37HRowJYcmydaG/Ib41bUflr2jIC.lS'
+const BIN_ID    = '6a212290da38895dfe84f187'
+const API_KEY   = '$2a$10$S4L4AI6Ixu.mcfT/xS3q4.37HRowJYcmydaG/Ib41bUflr2jIC.lS'
 const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`
-const CLAUDE_API = 'https://api.anthropic.com/v1/messages'
+const CLAUDE_API  = 'https://api.anthropic.com/v1/messages'
 const GOALS = { weeklyKm: 30, monthlyKm: 120, targetPace: 6.0 }
 const ANIM_SPEEDS = [
-  { label: '1×', value: 1 },
-  { label: '3×', value: 3 },
+  { label: '1×',  value: 1  },
+  { label: '3×',  value: 3  },
   { label: '10×', value: 10 },
   { label: '30×', value: 30 },
 ]
-const ANIM_SECS_1X = 20
+const ANIM_SECS_1X   = 20   // 1× 속도 기준 총 재생 시간 (초)
+const POLYLINE_MS    = 66   // 폴리라인 갱신 주기 (~15fps)
 
 const TABS = [
   { id: 0, label: '홈',   icon: '🏠' },
@@ -28,29 +28,16 @@ const TABS = [
 ]
 
 const SHORTCUTS = [
-  { keys: 'N',     desc: '새 러닝 기록 추가' },
-  { keys: 'D',     desc: '홈 탭' },
-  { keys: 'A',     desc: 'AI 코치 탭' },
-  { keys: 'R',     desc: '데이터 새로고침' },
-  { keys: 'Esc',   desc: '모달 닫기' },
+  { keys: 'N',      desc: '새 러닝 기록 추가' },
+  { keys: 'D',      desc: '홈 탭' },
+  { keys: 'A',      desc: 'AI 코치 탭' },
+  { keys: 'R',      desc: '데이터 새로고침' },
+  { keys: 'Esc',    desc: '모달 닫기' },
   { keys: '↑ / ↓', desc: '기록 탐색' },
-  { keys: 'Del',   desc: '선택 기록 삭제' },
+  { keys: 'Del',    desc: '선택 기록 삭제' },
 ]
 
-const DARK_MAP_STYLE = [
-  { elementType: 'geometry',              stylers: [{ color: '#242424' }] },
-  { elementType: 'labels.text.fill',      stylers: [{ color: '#9ca3af' }] },
-  { elementType: 'labels.text.stroke',    stylers: [{ color: '#1f2028' }] },
-  { featureType: 'poi',          elementType: 'geometry',         stylers: [{ color: '#2e303a' }] },
-  { featureType: 'poi.park',     elementType: 'geometry',         stylers: [{ color: '#1a2e1a' }] },
-  { featureType: 'road',         elementType: 'geometry',         stylers: [{ color: '#2e303a' }] },
-  { featureType: 'road',         elementType: 'geometry.stroke',  stylers: [{ color: '#161616' }] },
-  { featureType: 'road.highway', elementType: 'geometry',         stylers: [{ color: '#3e3e3e' }] },
-  { featureType: 'transit',      elementType: 'geometry',         stylers: [{ color: '#2e2e2e' }] },
-  { featureType: 'water',        elementType: 'geometry',         stylers: [{ color: '#0d0d0d' }] },
-]
-
-// 샘플 경로 — 서울 한강공원 인근
+// 한강공원 인근 샘플 경로
 const SAMPLE_GPS = `[[37.5195,126.9393],[37.5199,126.9400],[37.5203,126.9408],[37.5207,126.9416],[37.5210,126.9424],[37.5213,126.9432],[37.5216,126.9440],[37.5219,126.9448],[37.5222,126.9456],[37.5225,126.9464],[37.5228,126.9472],[37.5231,126.9480],[37.5234,126.9487],[37.5237,126.9494],[37.5240,126.9500],[37.5243,126.9506],[37.5246,126.9511],[37.5248,126.9516],[37.5250,126.9521],[37.5252,126.9526],[37.5254,126.9531],[37.5256,126.9536],[37.5258,126.9541],[37.5260,126.9546],[37.5262,126.9551],[37.5264,126.9556],[37.5266,126.9561],[37.5268,126.9566],[37.5269,126.9571],[37.5270,126.9577]]`
 
 /* ── 유틸 ── */
@@ -61,10 +48,9 @@ function paceToStr(p) {
 }
 
 function haversine(lat1, lon1, lat2, lon2) {
-  const R = 6371, toR = Math.PI / 180
-  const dLat = (lat2 - lat1) * toR, dLon = (lon2 - lon1) * toR
-  const a = Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * toR) * Math.cos(lat2 * toR) * Math.sin(dLon / 2) ** 2
+  const R = 6371, r = Math.PI / 180
+  const dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dLon / 2) ** 2
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
@@ -83,7 +69,7 @@ function parseGPS(input) {
   })
 }
 
-/* ── 공용 UI ── */
+/* ── 공용 스타일 ── */
 const inputStyle = {
   width: '100%', boxSizing: 'border-box',
   background: '#2e303a', border: '1px solid #4b5563', borderRadius: 10,
@@ -153,17 +139,20 @@ function FormField({ label, children }) {
   )
 }
 
-/* ════════════════ 지도 탭 ════════════════ */
-function MapTab({ googleMapsKey, active }) {
-  const mapRef        = useRef(null)
-  const mapObj        = useRef(null)
-  const bgLine        = useRef(null)
-  const animLine      = useRef(null)
-  const runnerMarker  = useRef(null)
-  const rafId         = useRef(null)
-  const progressRef   = useRef(0)
-  const playingRef    = useRef(false)
-  const coordsRef     = useRef([])
+/* ════════════════ 카카오맵 탭 ════════════════ */
+function MapTab({ kakaoMapsKey, active }) {
+  const mapRef         = useRef(null)
+  const mapObj         = useRef(null)
+  const bgLine         = useRef(null)
+  const animLine       = useRef(null)
+  const runnerOverlay  = useRef(null)
+  const startMarker    = useRef(null)
+  const endMarker      = useRef(null)
+  const rafId          = useRef(null)
+  const progressRef    = useRef(0)
+  const playingRef     = useRef(false)
+  const coordsRef      = useRef([])
+  const lastPolylineTs = useRef(0)
 
   const [activated,  setActivated]  = useState(false)
   const [mapLoaded,  setMapLoaded]  = useState(false)
@@ -180,37 +169,66 @@ function MapTab({ googleMapsKey, active }) {
   // 처음 방문 시 활성화
   useEffect(() => { if (active && !activated) setActivated(true) }, [active, activated])
 
-  // Google Maps 로드
+  // Kakao Maps 스크립트 로드
   useEffect(() => {
-    if (!googleMapsKey || !activated || mapLoaded) return
-    new Loader({ apiKey: googleMapsKey, version: 'weekly' })
-      .load()
-      .then(() => { setMapLoaded(true); setMapError('') })
-      .catch(() => setMapError('API 키가 올바르지 않거나 Maps JavaScript API가 비활성화되어 있습니다.'))
-  }, [googleMapsKey, activated, mapLoaded])
+    if (!kakaoMapsKey || !activated) return
+    if (window.kakao?.maps) { setMapLoaded(true); return }
 
-  // 지도 초기화 (mapRef div가 준비된 뒤)
+    // 이미 삽입된 스크립트가 있으면 스킵
+    if (document.getElementById('kakao-maps-sdk')) return
+
+    const script = document.createElement('script')
+    script.id  = 'kakao-maps-sdk'
+    script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${kakaoMapsKey}&autoload=false`
+    script.onload  = () => window.kakao.maps.load(() => { setMapLoaded(true); setMapError('') })
+    script.onerror = () => setMapError('Kakao Maps 로드 실패. API 키와 플랫폼 도메인 설정을 확인하세요.')
+    document.head.appendChild(script)
+  }, [kakaoMapsKey, activated])
+
+  // 지도 객체 초기화
   useEffect(() => {
     if (!mapLoaded || !mapRef.current || mapObj.current) return
-    mapObj.current = new window.google.maps.Map(mapRef.current, {
-      zoom: 14,
-      center: { lat: 37.5665, lng: 126.9780 },
-      styles: DARK_MAP_STYLE,
-      mapTypeControl: false,
-      streetViewControl: false,
-      fullscreenControl: false,
-      zoomControlOptions: { position: window.google.maps.ControlPosition.RIGHT_BOTTOM },
+    mapObj.current = new window.kakao.maps.Map(mapRef.current, {
+      center: new window.kakao.maps.LatLng(37.5665, 126.9780),
+      level: 6,
     })
   }, [mapLoaded])
 
   useEffect(() => { coordsRef.current = coords }, [coords])
 
+  /* 지도 오브젝트 정리 */
   const clearMapObjects = () => {
-    bgLine.current?.setMap(null);    bgLine.current = null
-    animLine.current?.setMap(null);  animLine.current = null
-    runnerMarker.current?.setMap(null); runnerMarker.current = null
+    bgLine.current?.setMap(null);        bgLine.current = null
+    animLine.current?.setMap(null);      animLine.current = null
+    runnerOverlay.current?.setMap(null); runnerOverlay.current = null
+    startMarker.current?.setMap(null);   startMarker.current = null
+    endMarker.current?.setMap(null);     endMarker.current = null
   }
 
+  /* 폴리라인 생성 헬퍼 */
+  const makeLine = (pts, color, opacity = 1) => {
+    const line = new window.kakao.maps.Polyline({
+      path: pts.map(c => new window.kakao.maps.LatLng(c.lat, c.lng)),
+      strokeWeight: 5, strokeColor: color,
+      strokeOpacity: opacity, strokeStyle: 'solid',
+    })
+    line.setMap(mapObj.current)
+    return line
+  }
+
+  /* 커스텀 오버레이 (러너 이모지) */
+  const makeRunnerOverlay = (pos) => {
+    const el = document.createElement('div')
+    el.style.cssText = 'font-size:28px;line-height:1;transform:translate(-50%,-80%);pointer-events:none;'
+    el.textContent = '🏃'
+    const overlay = new window.kakao.maps.CustomOverlay({
+      position: pos, content: el, zIndex: 10,
+    })
+    overlay.setMap(mapObj.current)
+    return overlay
+  }
+
+  /* 경로 불러오기 */
   const loadRoute = () => {
     setParseErr('')
     try {
@@ -227,53 +245,50 @@ function MapTab({ googleMapsKey, active }) {
       cancelAnimationFrame(rafId.current)
       playingRef.current = false
       progressRef.current = 0
+      lastPolylineTs.current = 0
       setPlaying(false); setProgress(0)
       clearMapObjects()
 
       const map = mapObj.current
+      const K = window.kakao.maps
 
-      // 배경 경로
-      bgLine.current = new window.google.maps.Polyline({
-        path: pts, geodesic: true,
-        strokeColor: '#374151', strokeOpacity: 0.5, strokeWeight: 5, map,
-      })
+      // 배경 경로 (흐리게)
+      bgLine.current = makeLine(pts, '#6b7280', 0.4)
 
-      // 애니메이션 경로
-      animLine.current = new window.google.maps.Polyline({
-        path: [pts[0]], geodesic: true,
-        strokeColor: '#7c3aed', strokeOpacity: 1, strokeWeight: 5, map,
-      })
+      // 애니메이션 경로 (처음엔 첫 점만)
+      animLine.current = makeLine([pts[0], pts[0]], '#7c3aed', 1)
 
-      // 출발/도착 마커
-      const circleIcon = (color) => ({
-        path: window.google.maps.SymbolPath.CIRCLE,
-        scale: 9, fillColor: color, fillOpacity: 1,
-        strokeColor: '#ffffff', strokeWeight: 2,
-      })
-      new window.google.maps.Marker({ position: pts[0], map, zIndex: 5,
-        icon: circleIcon('#34d399'),
-        label: { text: 'S', color: '#fff', fontSize: '10px', fontWeight: 'bold' } })
-      new window.google.maps.Marker({ position: pts[pts.length - 1], map, zIndex: 5,
-        icon: circleIcon('#f87171'),
-        label: { text: 'F', color: '#fff', fontSize: '10px', fontWeight: 'bold' } })
-
-      // 러너 마커
-      const runnerSvg = encodeURIComponent(
-        '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"><text y="30" font-size="28">🏃</text></svg>'
+      // 출발 마커 (S)
+      const sImg = new K.MarkerImage(
+        'https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/markerStar.png',
+        new K.Size(24, 35)
       )
-      runnerMarker.current = new window.google.maps.Marker({
-        position: pts[0], map, zIndex: 20,
-        icon: {
-          url: `data:image/svg+xml;charset=UTF-8,${runnerSvg}`,
-          scaledSize: new window.google.maps.Size(36, 36),
-          anchor: new window.google.maps.Point(18, 18),
-        },
+      startMarker.current = new K.Marker({
+        position: new K.LatLng(pts[0].lat, pts[0].lng), map, image: sImg,
       })
 
-      // 경계 맞춤
-      const bounds = new window.google.maps.LatLngBounds()
-      pts.forEach(p => bounds.extend(p))
-      map.fitBounds(bounds, { padding: 50 })
+      // 도착 마커 (F) — 기본 마커
+      endMarker.current = new K.Marker({
+        position: new K.LatLng(pts[pts.length - 1].lat, pts[pts.length - 1].lng), map,
+      })
+
+      // 출발/도착 라벨
+      const makeLabel = (pos, text, bg) => {
+        const d = document.createElement('div')
+        d.style.cssText = `background:${bg};color:#fff;font-size:11px;font-weight:700;padding:3px 7px;border-radius:10px;transform:translate(-50%,-140%);white-space:nowrap;`
+        d.textContent = text
+        new K.CustomOverlay({ position: pos, content: d, zIndex: 5 }).setMap(map)
+      }
+      makeLabel(new K.LatLng(pts[0].lat, pts[0].lng), '출발', '#34d399')
+      makeLabel(new K.LatLng(pts[pts.length-1].lat, pts[pts.length-1].lng), '도착', '#f87171')
+
+      // 러너 오버레이
+      runnerOverlay.current = makeRunnerOverlay(new K.LatLng(pts[0].lat, pts[0].lng))
+
+      // 지도 범위 맞춤
+      const bounds = new K.LatLngBounds()
+      pts.forEach(p => bounds.extend(new K.LatLng(p.lat, p.lng)))
+      map.setBounds(bounds)
 
       setShowPanel(false)
     } catch (e) {
@@ -299,16 +314,29 @@ function MapTab({ googleMapsKey, active }) {
         progressRef.current + (speed * dt) / (ANIM_SECS_1X * 1000), 1
       )
       const rawIdx = progressRef.current * (total - 1)
-      const fi = Math.floor(rawIdx), frac = rawIdx - fi
+      const fi    = Math.floor(rawIdx)
+      const frac  = rawIdx - fi
 
-      animLine.current?.setPath(coordsRef.current.slice(0, fi + 2))
-
-      if (runnerMarker.current && fi < total - 1) {
+      // 러너 위치 (60fps 매끄럽게)
+      if (runnerOverlay.current && fi < total - 1) {
         const a = coordsRef.current[fi], b = coordsRef.current[fi + 1]
-        runnerMarker.current.setPosition({
-          lat: a.lat + (b.lat - a.lat) * frac,
-          lng: a.lng + (b.lng - a.lng) * frac,
+        runnerOverlay.current.setPosition(new window.kakao.maps.LatLng(
+          a.lat + (b.lat - a.lat) * frac,
+          a.lng + (b.lng - a.lng) * frac,
+        ))
+      }
+
+      // 폴리라인 갱신 (~15fps 스로틀)
+      if (ts - lastPolylineTs.current > POLYLINE_MS) {
+        lastPolylineTs.current = ts
+        const slice = coordsRef.current.slice(0, fi + 2)
+        const path  = slice.map(c => new window.kakao.maps.LatLng(c.lat, c.lng))
+        if (animLine.current) animLine.current.setMap(null)
+        animLine.current = new window.kakao.maps.Polyline({
+          path, strokeWeight: 5, strokeColor: '#7c3aed',
+          strokeOpacity: 1, strokeStyle: 'solid',
         })
+        animLine.current.setMap(mapObj.current)
       }
 
       setProgress(progressRef.current)
@@ -319,23 +347,47 @@ function MapTab({ googleMapsKey, active }) {
     rafId.current = requestAnimationFrame(frame)
   }
 
-  const pause = () => { playingRef.current = false; setPlaying(false); cancelAnimationFrame(rafId.current) }
-
-  const reset = () => {
-    pause(); progressRef.current = 0; setProgress(0)
-    const c = coordsRef.current
-    if (c.length) { animLine.current?.setPath([c[0]]); runnerMarker.current?.setPosition(c[0]) }
+  const pause = () => {
+    playingRef.current = false; setPlaying(false)
+    cancelAnimationFrame(rafId.current)
   }
 
-  /* 진행 바 클릭으로 스크럽 */
+  const reset = () => {
+    pause()
+    progressRef.current = 0; setProgress(0)
+    lastPolylineTs.current = 0
+    const c = coordsRef.current
+    if (!c.length || !mapObj.current) return
+
+    // 폴리라인 리셋
+    if (animLine.current) animLine.current.setMap(null)
+    animLine.current = makeLine([c[0], c[0]], '#7c3aed', 1)
+
+    // 러너 위치 리셋
+    runnerOverlay.current?.setPosition(new window.kakao.maps.LatLng(c[0].lat, c[0].lng))
+  }
+
+  /* 진행 바 스크럽 */
   const scrub = (e) => {
     const rect = e.currentTarget.getBoundingClientRect()
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+    const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
     progressRef.current = pct; setProgress(pct)
+
     const total = coordsRef.current.length
-    const fi = Math.floor(pct * (total - 1))
-    animLine.current?.setPath(coordsRef.current.slice(0, fi + 2))
-    runnerMarker.current?.setPosition(coordsRef.current[fi])
+    if (!total || !mapObj.current) return
+    const fi = Math.min(Math.floor(pct * (total - 1)), total - 2)
+
+    // 폴리라인 업데이트
+    const path = coordsRef.current.slice(0, fi + 2).map(c => new window.kakao.maps.LatLng(c.lat, c.lng))
+    if (animLine.current) animLine.current.setMap(null)
+    animLine.current = new window.kakao.maps.Polyline({
+      path, strokeWeight: 5, strokeColor: '#7c3aed', strokeOpacity: 1, strokeStyle: 'solid',
+    })
+    animLine.current.setMap(mapObj.current)
+
+    runnerOverlay.current?.setPosition(new window.kakao.maps.LatLng(
+      coordsRef.current[fi].lat, coordsRef.current[fi].lng
+    ))
   }
 
   const pctDone = Math.round(progress * 100)
@@ -345,46 +397,53 @@ function MapTab({ googleMapsKey, active }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: 'calc(100dvh - 136px)' }}>
-      {!googleMapsKey ? (
-        /* API 키 없음 안내 */
+      {!kakaoMapsKey ? (
         <div style={{ background: '#1f2028', borderRadius: 14, padding: 28, textAlign: 'center', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ fontSize: 40, marginBottom: 14 }}>🗺️</div>
-          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 10 }}>Google Maps API 키 필요</div>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 10 }}>Kakao Maps API 키 필요</div>
           <div style={{ color: '#9ca3af', fontSize: 13, lineHeight: 1.8 }}>
-            설정 탭에서 Google Maps API 키를 입력하면<br />GPS 경로 시각화가 활성화됩니다.
+            설정 탭에서 Kakao Maps JavaScript API 키를 입력하면<br />GPS 경로 시각화가 활성화됩니다.
           </div>
-          <a href="https://console.cloud.google.com/apis/library/maps-backend.googleapis.com"
+          <a href="https://developers.kakao.com/console/app"
             target="_blank" rel="noreferrer"
-            style={{ color: '#c084fc', fontSize: 13, marginTop: 14 }}>
-            Maps JavaScript API 활성화하기 →
+            style={{ color: '#FFCD00', fontSize: 13, marginTop: 14, display: 'inline-block' }}>
+            Kakao Developers에서 앱 키 발급하기 →
           </a>
+          <div style={{ color: '#6b7280', fontSize: 11, marginTop: 10, lineHeight: 1.6 }}>
+            앱 생성 → 플랫폼 → Web → 사이트 도메인 등록 필요
+          </div>
         </div>
       ) : mapError ? (
-        <div style={{ background: '#7f1d1d', borderRadius: 14, padding: 16, color: '#fca5a5', fontSize: 14 }}>{mapError}</div>
+        <div style={{ background: '#7f1d1d', borderRadius: 14, padding: 16, color: '#fca5a5', fontSize: 14, lineHeight: 1.6 }}>
+          {mapError}
+          <div style={{ marginTop: 8, fontSize: 12, color: '#fca5a5', opacity: 0.8 }}>
+            Kakao Developers → 내 애플리케이션 → 플랫폼 → Web 사이트 도메인에 현재 도메인을 추가해주세요.
+          </div>
+        </div>
       ) : (
         <>
-          {/* 지도 영역 */}
-          <div style={{ flex: 1, position: 'relative', borderRadius: 14, overflow: 'hidden', background: '#1f2028', minHeight: 200 }}>
+          {/* 지도 */}
+          <div style={{ flex: 1, position: 'relative', borderRadius: 14, overflow: 'hidden', background: '#e8e8e8', minHeight: 220 }}>
             <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
 
             {/* 진행 오버레이 */}
             {coords.length > 0 && (
-              <div style={{ position: 'absolute', top: 10, left: 10, background: 'rgba(22,23,29,0.88)', borderRadius: 10, padding: '7px 12px', fontSize: 13, backdropFilter: 'blur(4px)' }}>
-                <span style={{ color: '#7c3aed', fontWeight: 700 }}>{kmDone}</span>
-                <span style={{ color: '#6b7280' }}> / {routeKm} km</span>
-                <span style={{ color: '#9ca3af', marginLeft: 8 }}>{pctDone}%</span>
+              <div style={{ position: 'absolute', top: 10, left: 10, background: 'rgba(22,23,29,0.85)', borderRadius: 10, padding: '7px 12px', fontSize: 13, backdropFilter: 'blur(4px)', zIndex: 10 }}>
+                <span style={{ color: '#a78bfa', fontWeight: 700 }}>{kmDone}</span>
+                <span style={{ color: '#9ca3af' }}> / {routeKm} km</span>
+                <span style={{ color: '#6b7280', marginLeft: 8 }}>{pctDone}%</span>
               </div>
             )}
 
-            {/* 경로 입력 토글 버튼 */}
+            {/* 경로 입력 토글 */}
             <button onClick={() => setShowPanel(v => !v)}
-              style={{ position: 'absolute', top: 10, right: 10, background: 'rgba(22,23,29,0.88)', border: '1px solid #4b5563', borderRadius: 10, padding: '7px 12px', color: '#c084fc', fontSize: 13, cursor: 'pointer', backdropFilter: 'blur(4px)', WebkitTapHighlightColor: 'transparent' }}>
+              style={{ position: 'absolute', top: 10, right: 10, background: 'rgba(22,23,29,0.85)', border: '1px solid #4b5563', borderRadius: 10, padding: '7px 12px', color: '#FFCD00', fontSize: 13, cursor: 'pointer', backdropFilter: 'blur(4px)', zIndex: 10, WebkitTapHighlightColor: 'transparent' }}>
               {showPanel ? '✕ 닫기' : '📍 경로 입력'}
             </button>
 
             {!mapLoaded && (
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', background: '#1f2028' }}>
-                지도 로딩 중...
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280', background: '#1f2028', fontSize: 14 }}>
+                카카오맵 로딩 중...
               </div>
             )}
           </div>
@@ -393,16 +452,23 @@ function MapTab({ googleMapsKey, active }) {
           {showPanel && (
             <div style={{ background: '#1f2028', borderRadius: 14, padding: 14 }}>
               <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>
-                GPS 좌표 — <code style={{ color: '#6b7280', fontSize: 11 }}>[[lat,lng], ...]</code> 또는 <code style={{ color: '#6b7280', fontSize: 11 }}>[{'{'}lat,lng{'}'},...]</code>
+                GPS 좌표 입력 — <code style={{ color: '#6b7280', fontSize: 11 }}>[[lat,lng], ...]</code> 또는 <code style={{ color: '#6b7280', fontSize: 11 }}>[{'{'}lat,lng{'}'},...]</code>
               </div>
-              <textarea value={gpsInput} onChange={e => { setGpsInput(e.target.value); setParseErr('') }}
+              <textarea
+                value={gpsInput}
+                onChange={e => { setGpsInput(e.target.value); setParseErr('') }}
                 rows={3}
                 placeholder="[[37.5195, 126.9393], [37.5199, 126.9400], ...]"
-                style={{ ...inputStyle, resize: 'vertical', fontSize: 12, fontFamily: 'monospace' }} />
+                style={{ ...inputStyle, resize: 'vertical', fontSize: 12, fontFamily: 'monospace' }}
+              />
               {parseErr && <div style={{ color: '#fca5a5', fontSize: 12, marginTop: 5 }}>{parseErr}</div>}
               <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                <TouchBtn onClick={() => { setGpsInput(SAMPLE_GPS); setParseErr('') }} color="#2e303a" style={{ flex: 1, fontSize: 13, padding: '10px' }}>샘플</TouchBtn>
-                <TouchBtn onClick={loadRoute} disabled={!gpsInput.trim() || !mapLoaded} style={{ flex: 2, fontSize: 13, padding: '10px' }}>경로 불러오기</TouchBtn>
+                <TouchBtn onClick={() => { setGpsInput(SAMPLE_GPS); setParseErr('') }} color="#2e303a" style={{ flex: 1, fontSize: 13, padding: '10px' }}>
+                  샘플
+                </TouchBtn>
+                <TouchBtn onClick={loadRoute} disabled={!gpsInput.trim() || !mapLoaded} style={{ flex: 2, fontSize: 13, padding: '10px' }}>
+                  경로 불러오기
+                </TouchBtn>
               </div>
             </div>
           )}
@@ -413,12 +479,15 @@ function MapTab({ googleMapsKey, active }) {
               {/* 진행 바 */}
               <div onClick={scrub}
                 style={{ background: '#2e303a', borderRadius: 4, height: 6, marginBottom: 12, cursor: 'pointer', overflow: 'hidden' }}>
-                <div style={{ background: 'linear-gradient(90deg,#7c3aed,#c084fc)', height: '100%', width: `${pctDone}%`, borderRadius: 4, transition: 'width .05s linear' }} />
+                <div style={{ background: 'linear-gradient(90deg,#7c3aed,#a78bfa)', height: '100%', width: `${pctDone}%`, borderRadius: 4, transition: 'width .05s linear' }} />
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 {/* 리셋 */}
-                <button onClick={reset} style={{ background: '#2e303a', border: 'none', borderRadius: 10, width: 44, height: 44, color: '#9ca3af', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, WebkitTapHighlightColor: 'transparent' }}>⏮</button>
+                <button onClick={reset}
+                  style={{ background: '#2e303a', border: 'none', borderRadius: 10, width: 44, height: 44, color: '#9ca3af', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, WebkitTapHighlightColor: 'transparent' }}>
+                  ⏮
+                </button>
 
                 {/* 재생 / 일시정지 */}
                 <button onClick={playing ? pause : play}
@@ -426,7 +495,7 @@ function MapTab({ googleMapsKey, active }) {
                   {playing ? '⏸' : progress >= 1 ? '↺' : '▶'}
                 </button>
 
-                {/* 속도 */}
+                {/* 속도 선택 */}
                 <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                   {ANIM_SPEEDS.map((s, i) => (
                     <button key={i} onClick={() => setSpeedIdx(i)}
@@ -448,8 +517,8 @@ function MapTab({ googleMapsKey, active }) {
                   <div style={{ color: '#60a5fa', fontWeight: 700, fontSize: 15 }}>{coords.length}</div>
                 </div>
                 <div style={{ flex: 1, textAlign: 'center' }}>
-                  <div style={{ color: '#6b7280', fontSize: 11 }}>진행</div>
-                  <div style={{ color: '#c084fc', fontWeight: 700, fontSize: 15 }}>{kmDone} km</div>
+                  <div style={{ color: '#6b7280', fontSize: 11 }}>진행 거리</div>
+                  <div style={{ color: '#a78bfa', fontWeight: 700, fontSize: 15 }}>{kmDone} km</div>
                 </div>
               </div>
             </div>
@@ -462,19 +531,19 @@ function MapTab({ googleMapsKey, active }) {
 
 /* ════════════════ 메인 앱 ════════════════ */
 export default function App() {
-  const [runs,        setRuns]        = useState([])
-  const [loading,     setLoading]     = useState(true)
-  const [tab,         setTab]         = useState(0)
-  const [showForm,    setShowForm]    = useState(false)
-  const [form,        setForm]        = useState({ date: '', distance: '', pace: '', hr: '', calories: '', note: '' })
-  const [saving,      setSaving]      = useState(false)
-  const [selectedIdx, setSelectedIdx] = useState(null)
-  const [aiInput,     setAiInput]     = useState('')
-  const [aiMessages,  setAiMessages]  = useState([])
-  const [aiLoading,   setAiLoading]   = useState(false)
-  const [claudeKey,   setClaudeKey]   = useState(() => localStorage.getItem('claudeKey') || '')
-  const [googleMapsKey, setGoogleMapsKey] = useState(() => localStorage.getItem('googleMapsKey') || '')
-  const [error,       setError]       = useState('')
+  const [runs,          setRuns]          = useState([])
+  const [loading,       setLoading]       = useState(true)
+  const [tab,           setTab]           = useState(0)
+  const [showForm,      setShowForm]      = useState(false)
+  const [form,          setForm]          = useState({ date: '', distance: '', pace: '', hr: '', calories: '', note: '' })
+  const [saving,        setSaving]        = useState(false)
+  const [selectedIdx,   setSelectedIdx]   = useState(null)
+  const [aiInput,       setAiInput]       = useState('')
+  const [aiMessages,    setAiMessages]    = useState([])
+  const [aiLoading,     setAiLoading]     = useState(false)
+  const [claudeKey,     setClaudeKey]     = useState(() => localStorage.getItem('claudeKey') || '')
+  const [kakaoMapsKey,  setKakaoMapsKey]  = useState(() => localStorage.getItem('kakaoMapsKey') || '')
+  const [error,         setError]         = useState('')
   const aiEndRef = useRef(null)
 
   const fetchRuns = useCallback(async () => {
@@ -503,7 +572,7 @@ export default function App() {
     const h = (e) => {
       if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return
       const k = e.key
-      if (k === 'n' || k === 'N') setShowForm(true)
+      if      (k === 'n' || k === 'N') setShowForm(true)
       else if (k === 'd' || k === 'D') setTab(0)
       else if (k === 'a' || k === 'A') setTab(3)
       else if (k === 'r' || k === 'R') fetchRuns()
@@ -520,10 +589,15 @@ export default function App() {
     if (!form.date || !form.distance) return
     setSaving(true)
     try {
-      const entry = { date: form.date, distance: parseFloat(form.distance), pace: parseFloat(form.pace) || 0, hr: parseInt(form.hr) || 0, calories: parseInt(form.calories) || 0, note: form.note }
+      const entry = {
+        date: form.date, distance: parseFloat(form.distance),
+        pace: parseFloat(form.pace) || 0, hr: parseInt(form.hr) || 0,
+        calories: parseInt(form.calories) || 0, note: form.note,
+      }
       const newRuns = [...runs, entry].sort((a, b) => a.date.localeCompare(b.date))
       await saveRuns(newRuns); setRuns(newRuns)
-      setForm({ date: '', distance: '', pace: '', hr: '', calories: '', note: '' }); setShowForm(false)
+      setForm({ date: '', distance: '', pace: '', hr: '', calories: '', note: '' })
+      setShowForm(false)
     } catch { setError('저장 실패') }
     finally { setSaving(false) }
   }
@@ -534,7 +608,7 @@ export default function App() {
   }
 
   /* 통계 */
-  const now = new Date()
+  const now        = new Date()
   const weekAgo    = new Date(now - 7 * 86400000).toISOString().slice(0, 10)
   const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
   const weekRuns   = runs.filter(r => r.date >= weekAgo)
@@ -568,9 +642,10 @@ export default function App() {
     } finally { setAiLoading(false) }
   }
 
-  const saveClaudeKey    = k => { setClaudeKey(k);    localStorage.setItem('claudeKey', k) }
-  const saveGoogleMapsKey = k => { setGoogleMapsKey(k); localStorage.setItem('googleMapsKey', k) }
+  const saveClaudeKey   = k => { setClaudeKey(k);   localStorage.setItem('claudeKey', k) }
+  const saveKakaoKey    = k => { setKakaoMapsKey(k); localStorage.setItem('kakaoMapsKey', k) }
 
+  /* ── 렌더 ── */
   return (
     <div style={{ minHeight: '100dvh', background: '#16171d', color: '#f3f4f6', fontFamily: 'system-ui,"Segoe UI",sans-serif', display: 'flex', flexDirection: 'column', paddingBottom: 'calc(62px + env(safe-area-inset-bottom))' }}>
 
@@ -601,10 +676,10 @@ export default function App() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                 <TouchBtn onClick={() => setShowForm(true)} style={{ width: '100%', fontSize: 16 }}>+ 오늘 러닝 기록 추가</TouchBtn>
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                  <StatCard label="이번주"    value={`${weekKm}km`}   sub={`${weekRuns.length}회`}  color="#34d399" />
-                  <StatCard label="이번달"    value={`${monthKm}km`}  sub={`${monthRuns.length}회`} color="#60a5fa" />
-                  <StatCard label="평균 페이스" value={paceToStr(avgPace)} sub="/km"              color="#f472b6" />
-                  <StatCard label="평균 심박"  value={avgHr ? `${avgHr}bpm` : '-'}               color="#fb923c" />
+                  <StatCard label="이번주"     value={`${weekKm}km`}  sub={`${weekRuns.length}회`}  color="#34d399" />
+                  <StatCard label="이번달"     value={`${monthKm}km`} sub={`${monthRuns.length}회`} color="#60a5fa" />
+                  <StatCard label="평균 페이스" value={paceToStr(avgPace)} sub="/km"               color="#f472b6" />
+                  <StatCard label="평균 심박"  value={avgHr ? `${avgHr}bpm` : '-'}                color="#fb923c" />
                   <StatCard label="총 칼로리"  value={totalCal ? totalCal.toLocaleString() : '-'} sub="kcal" color="#facc15" />
                 </div>
                 <div style={{ background: '#1f2028', borderRadius: 14, padding: 16 }}>
@@ -711,9 +786,9 @@ export default function App() {
               </div>
             )}
 
-            {/* ── 지도 ── */}
+            {/* ── 지도 (항상 마운트, display로 토글) ── */}
             <div style={{ display: tab === 2 ? 'block' : 'none' }}>
-              <MapTab googleMapsKey={googleMapsKey} active={tab === 2} />
+              <MapTab kakaoMapsKey={kakaoMapsKey} active={tab === 2} />
             </div>
 
             {/* ── AI 코치 ── */}
@@ -757,17 +832,26 @@ export default function App() {
             {tab === 4 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                 <div style={{ background: '#1f2028', borderRadius: 14, padding: 16 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 12 }}>Claude API Key</div>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>Claude API Key</div>
+                  <div style={{ color: '#6b7280', fontSize: 12, marginBottom: 10 }}>AI 코치 기능 · 로컬 저장</div>
                   <input type="password" value={claudeKey} onChange={e => saveClaudeKey(e.target.value)} placeholder="sk-ant-..." style={inputStyle} />
-                  <div style={{ color: '#6b7280', fontSize: 12, marginTop: 7 }}>AI 코치 기능에 사용 · 로컬 저장</div>
                   {claudeKey && <button onClick={() => saveClaudeKey('')} style={{ marginTop: 10, background: 'none', border: '1px solid #4b5563', borderRadius: 8, padding: '7px 14px', color: '#9ca3af', cursor: 'pointer', fontSize: 13 }}>키 삭제</button>}
                 </div>
 
                 <div style={{ background: '#1f2028', borderRadius: 14, padding: 16 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 4 }}>Google Maps API Key</div>
-                  <div style={{ color: '#6b7280', fontSize: 12, marginBottom: 10 }}>지도 탭 GPS 경로 시각화에 사용 · Maps JavaScript API 필요</div>
-                  <input type="password" value={googleMapsKey} onChange={e => saveGoogleMapsKey(e.target.value)} placeholder="AIza..." style={inputStyle} />
-                  {googleMapsKey && <button onClick={() => saveGoogleMapsKey('')} style={{ marginTop: 10, background: 'none', border: '1px solid #4b5563', borderRadius: 8, padding: '7px 14px', color: '#9ca3af', cursor: 'pointer', fontSize: 13 }}>키 삭제</button>}
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>Kakao Maps JavaScript API 키</div>
+                  <div style={{ color: '#6b7280', fontSize: 12, marginBottom: 10, lineHeight: 1.6 }}>
+                    지도 탭 GPS 경로 시각화에 사용 · 로컬 저장<br />
+                    <a href="https://developers.kakao.com/console/app" target="_blank" rel="noreferrer" style={{ color: '#FFCD00' }}>Kakao Developers</a>에서 앱 생성 후 JavaScript 키 입력
+                  </div>
+                  <input type="password" value={kakaoMapsKey} onChange={e => saveKakaoKey(e.target.value)} placeholder="카카오 JavaScript 앱 키" style={inputStyle} />
+                  {kakaoMapsKey && <button onClick={() => saveKakaoKey('')} style={{ marginTop: 10, background: 'none', border: '1px solid #4b5563', borderRadius: 8, padding: '7px 14px', color: '#9ca3af', cursor: 'pointer', fontSize: 13 }}>키 삭제</button>}
+                  <div style={{ marginTop: 12, background: '#2e303a', borderRadius: 10, padding: '10px 12px', fontSize: 12, color: '#9ca3af', lineHeight: 1.8 }}>
+                    <div style={{ fontWeight: 600, color: '#f3f4f6', marginBottom: 4 }}>도메인 등록 필수</div>
+                    <div>Kakao Developers → 내 애플리케이션 → 플랫폼</div>
+                    <div>→ Web → 사이트 도메인에 아래 주소 추가:</div>
+                    <code style={{ color: '#FFCD00', fontSize: 11 }}>https://running-dashboard-two.vercel.app</code>
+                  </div>
                 </div>
 
                 <div style={{ background: '#1f2028', borderRadius: 14, overflow: 'hidden' }}>
