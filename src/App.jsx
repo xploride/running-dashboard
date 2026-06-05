@@ -683,16 +683,16 @@ function RecordsTab({ runs, onAdd, onDelete, gpxStore, onViewRoute }) {
                     )
                     return (
                       <button
-                        onClick={e=>{e.stopPropagation();onViewRoute(r.date)}}
-                        onTouchEnd={e=>{e.stopPropagation();e.preventDefault();onViewRoute(r.date)}}
-                        style={{marginTop:10,width:'100%',background:`${C.lime}18`,border:`1px solid ${C.lime}55`,borderRadius:10,padding:'9px',color:C.lime,fontSize:12,fontWeight:800,letterSpacing:'0.08em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent',touchAction:'manipulation',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+                        onPointerDown={e=>{e.stopPropagation();e.preventDefault();onViewRoute(r.date)}}
+                        style={{marginTop:10,width:'100%',minHeight:44,background:`${C.lime}18`,border:`1px solid ${C.lime}55`,borderRadius:10,padding:'11px 9px',color:C.lime,fontSize:12,fontWeight:800,letterSpacing:'0.08em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent',touchAction:'manipulation',userSelect:'none',WebkitUserSelect:'none',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
                         {hasLS ? '📍' : '▶'} 경로 보기
                       </button>
                     )
                   })()}
 
-                  {sel&&<button onClick={e=>{e.stopPropagation();onDelete(r._origIdx);setSelectedIdx(null)}}
-                    style={{marginTop:8,width:'100%',background:C.red+'22',border:`1px solid ${C.red}44`,borderRadius:10,padding:'10px',color:C.red,fontSize:12,fontWeight:800,letterSpacing:'0.06em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
+                  {sel&&<button
+                    onPointerDown={e=>{e.stopPropagation();e.preventDefault();onDelete(r._origIdx);setSelectedIdx(null)}}
+                    style={{marginTop:8,width:'100%',minHeight:44,background:C.red+'22',border:`1px solid ${C.red}44`,borderRadius:10,padding:'11px 10px',color:C.red,fontSize:12,fontWeight:800,letterSpacing:'0.06em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent',touchAction:'manipulation',userSelect:'none',WebkitUserSelect:'none'}}>
                     DELETE RUN
                   </button>}
                 </div>
