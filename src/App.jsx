@@ -1166,15 +1166,14 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
     e.target.value = ''
   }
 
-  /* GPX 저장 + 지도 표시 */
+  /* GPX 저장 + 지도 표시 — 요약 통계 + 좌표(4자리 압축) 모두 JSONBin에 저장 */
   const confirmGPXSave = async (sendToMap) => {
     if (!gpxPreview) return
     setImporting(true)
     try {
-      let added = 0
       if (sendToMap) onGPXLoad(gpxPreview.coords, gpxPreview.meta)
-      // 요약 데이터만 JSONBin에 저장 (coords 포함 안 됨)
-      added = await onImportRuns([gpxPreview.meta.runEntry])
+      const routeEntry = { date: gpxPreview.meta.runEntry.date, coords: gpxPreview.coords }
+      const added = await onImportRuns([gpxPreview.meta.runEntry], routeEntry)
       setImportResult({ added, total: 1, type: 'gpx' })
       setGpxPreview(null)
     } catch (err) { setFileError(err.message) }
@@ -1293,8 +1292,8 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
         <div style={{fontSize:12,color:C.muted,marginBottom:14,lineHeight:1.7}}>
           Apple Watch 내보내기 압축 해제 →{' '}
           <code style={{color:C.lime,fontSize:11}}>workout-routes/*.gpx</code><br/>
-          브라우저에서 파싱 후 <strong style={{color:C.white}}>요약 통계만 JSONBin에 저장</strong>합니다.<br/>
-          GPS 좌표는 저장하지 않고 지도 표시에만 사용됩니다.
+          브라우저에서 파싱 후 <strong style={{color:C.white}}>통계 + GPS 좌표를 JSONBin에 저장</strong>합니다.<br/>
+          좌표는 소수점 4자리로 압축되며 앱 재시작 후에도 경로를 볼 수 있습니다.
         </div>
 
         <input ref={gpxRef} type="file" accept=".gpx" onChange={handleGPXFile} style={{display:'none'}}/>
@@ -1313,7 +1312,7 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
             {/* 요약 통계 (저장될 데이터) */}
             <div style={{background:C.card,borderRadius:10,padding:'10px 12px',marginBottom:12}}>
               <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.15em',color:C.lime,textTransform:'uppercase',marginBottom:8}}>
-                JSONBin에 저장될 요약 데이터
+                JSONBin 저장 데이터 (통계 + 좌표 {gpxPreview.meta.pointCount.toLocaleString()}pts)
               </div>
               <div style={{display:'flex',flexWrap:'wrap',gap:14}}>
                 {[
@@ -1332,12 +1331,11 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
               </div>
             </div>
 
-            {/* 세션 전용 안내 */}
-            <div style={{display:'flex',alignItems:'flex-start',gap:8,background:`${C.blue}15`,borderRadius:10,padding:'8px 12px',marginBottom:12}}>
-              <span style={{fontSize:14,flexShrink:0}}>ℹ️</span>
+            <div style={{display:'flex',alignItems:'flex-start',gap:8,background:`${C.lime}12`,borderRadius:10,padding:'8px 12px',marginBottom:12}}>
+              <span style={{fontSize:14,flexShrink:0}}>📍</span>
               <div style={{fontSize:11,color:C.muted,lineHeight:1.6}}>
-                GPS 좌표 ({gpxPreview.meta.pointCount.toLocaleString()}개) 는 JSONBin에 저장되지 않습니다.
-                지도 표시는 현재 세션에서만 유지됩니다.
+                GPS 좌표는 소수점 4자리로 압축해 JSONBin에 저장됩니다.
+                앱을 재시작해도 LOG 탭에서 경로를 바로 볼 수 있습니다.
               </div>
             </div>
 
@@ -1407,7 +1405,8 @@ export default function App() {
   const [error,       setError]       = useState('')
   const [uploadedGPS, setUploadedGPS] = useState(null)
   const [gpxMeta,     setGpxMeta]     = useState(null)
-  const [gpxStore,    setGpxStore]    = useState({})   // { 'YYYY-MM-DD': {coords, meta} } — 세션 전용
+  const [gpxStore,    setGpxStore]    = useState({})   // { 'YYYY-MM-DD': {coords, meta} }
+  const [routes,      setRoutes]      = useState({})   // JSONBin routes 미러: { 'YYYY-MM-DD': [[lat,lng],...] }
   const [autoPlay,    setAutoPlay]    = useState(false)
   const fileInputRef = useRef(null)
 
@@ -1451,13 +1450,22 @@ export default function App() {
     try {
       const res  = await fetch(JSONBIN_URL+'/latest',{headers:{'X-Master-Key':API_KEY}})
       const data = await res.json()
-      setRuns(data.record?.runs||[])
+      setRuns(data.record?.runs || [])
+      const routesData = data.record?.routes || {}
+      setRoutes(routesData)
+      // JSONBin routes → gpxStore (앱 시작 시 좌표 복원)
+      const store = {}
+      Object.entries(routesData).forEach(([date, arr]) => {
+        const coords = arr.map(([lat, lng]) => ({ lat, lng }))
+        store[date] = { coords, meta: { runEntry:{ date }, name:null, dateStr:null, duration:null, elevGain:0, avgHR:null, routeDist:0, pointCount:coords.length, hasElevation:false, hasHR:false } }
+      })
+      setGpxStore(store)
     } catch { setError('데이터 로드 실패') }
     finally { setLoading(false) }
   },[])
 
-  const saveRuns = async (newRuns) => {
-    const res = await fetch(JSONBIN_URL,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':API_KEY},body:JSON.stringify({runs:newRuns})})
+  const saveData = async (newRuns, newRoutes) => {
+    const res = await fetch(JSONBIN_URL,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':API_KEY},body:JSON.stringify({runs:newRuns,routes:newRoutes})})
     if(!res.ok) throw new Error('저장 실패')
   }
 
@@ -1465,7 +1473,7 @@ export default function App() {
 
   const handleAdd = async (entry) => {
     const newRuns = [...runs,entry].sort((a,b)=>a.date.localeCompare(b.date))
-    await saveRuns(newRuns)
+    await saveData(newRuns, routes)
     setRuns(newRuns)
     setShowAdd(false)
     setCelebRun(entry)
@@ -1473,15 +1481,27 @@ export default function App() {
 
   const handleDelete = async (idx) => {
     const newRuns = runs.filter((_,i)=>i!==idx)
-    await saveRuns(newRuns); setRuns(newRuns)
+    await saveData(newRuns, routes)
+    setRuns(newRuns)
   }
 
-  // Apple Health import — 중복 제거(날짜+거리 반올림 키) 후 병합
-  const handleImportRuns = async (importedRuns) => {
+  // Apple Health import — 중복 제거 후 병합. routeEntry가 있으면 coords도 함께 저장
+  const handleImportRuns = async (importedRuns, routeEntry = null) => {
     const existing = new Set(runs.map(r=>`${r.date}_${Math.round(r.distance*10)}`))
     const newOnly  = importedRuns.filter(r=>!existing.has(`${r.date}_${Math.round(r.distance*10)}`))
     const merged   = [...runs, ...newOnly].sort((a,b)=>a.date.localeCompare(b.date))
-    await saveRuns(merged)
+    let newRoutes  = routes
+    if (routeEntry) {
+      const { date, coords } = routeEntry
+      const compressed = coords.map(p => [
+        Math.round(p.lat * 1e4) / 1e4,
+        Math.round(p.lng * 1e4) / 1e4,
+      ])
+      newRoutes = { ...routes, [date]: compressed }
+      setRoutes(newRoutes)
+      setGpxStore(prev => ({ ...prev, [date]: { coords, meta: { runEntry:{ date }, name:null, dateStr:null, duration:null, elevGain:0, avgHR:null, routeDist:0, pointCount:coords.length, hasElevation:false, hasHR:false } } }))
+    }
+    await saveData(merged, newRoutes)
     setRuns(merged)
     return newOnly.length
   }
