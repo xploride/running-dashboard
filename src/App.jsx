@@ -79,6 +79,36 @@ function getPaceZone(pace) {
   if (!pace||pace<=0) return null
   return PACE_ZONES.find(z => pace>=z.min && pace<z.max) || PACE_ZONES[0]
 }
+// GPX · Apple Health XML · KML → [{lat,lng}]
+function parseXMLtoGPS(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, 'application/xml')
+  if (doc.querySelector('parsererror')) throw new Error('XML 파싱 오류: 올바른 XML 파일인지 확인하세요.')
+  const toNum = (v) => parseFloat(v)
+  const valid  = (p) => !isNaN(p.lat) && !isNaN(p.lng) && Math.abs(p.lat)<=90 && Math.abs(p.lng)<=180
+
+  // ① GPX: <trkpt lat="..." lon="..."> or <wpt lat="..." lon="...">
+  const trkpts = doc.querySelectorAll('trkpt, wpt, rtept')
+  if (trkpts.length > 0)
+    return Array.from(trkpts).map(n=>({lat:toNum(n.getAttribute('lat')),lng:toNum(n.getAttribute('lon'))})).filter(valid)
+
+  // ② Apple Health XML: <Location latitude="..." longitude="...">
+  const locs = doc.querySelectorAll('Location')
+  if (locs.length > 0)
+    return Array.from(locs).map(n=>({lat:toNum(n.getAttribute('latitude')),lng:toNum(n.getAttribute('longitude'))})).filter(valid)
+
+  // ③ KML: <coordinates>lng,lat,alt ...</coordinates>
+  const kmls = doc.querySelectorAll('coordinates')
+  if (kmls.length > 0) {
+    const pts = []
+    kmls.forEach(c => c.textContent.trim().split(/\s+/).forEach(t => {
+      const [lo,la] = t.split(',').map(Number)
+      if (!isNaN(la)&&!isNaN(lo)) pts.push({lat:la,lng:lo})
+    }))
+    if (pts.length > 0) return pts.filter(valid)
+  }
+
+  throw new Error('지원 형식: GPX (.gpx), Apple Health XML, KML (.kml)')
+}
 function calcStreak(runs) {
   if (!runs.length) return 0
   const sorted = [...new Set(runs.map(r=>r.date))].sort().reverse()
@@ -623,21 +653,22 @@ function AITab({ runs }) {
 /* ─────────────────────────────────────────
    MAP TAB (Apple Health style)
 ───────────────────────────────────────── */
-function MapTab({ active }) {
+function MapTab({ active, uploadedGPS, onUploadConsumed }) {
   const mapRef=useRef(null),mapObj=useRef(null),bgLineRef=useRef(null)
   const gradSegsRef=useRef([]),lastVisibleRef=useRef(-1)
   const runnerRef=useRef(null),rafId=useRef(null)
   const progressRef=useRef(0),playingRef=useRef(false),coordsRef=useRef([])
 
-  const [activated,setActivated]=useState(false)
-  const [gpsInput,setGpsInput]=useState('')
-  const [coords,setCoords]=useState([])
-  const [routeKm,setRouteKm]=useState(0)
-  const [playing,setPlaying]=useState(false)
-  const [progress,setProgress]=useState(0)
-  const [speedIdx,setSpeedIdx]=useState(1)
-  const [showPanel,setShowPanel]=useState(true)
-  const [parseErr,setParseErr]=useState('')
+  const [activated,  setActivated]  = useState(false)
+  const [mapReady,   setMapReady]   = useState(false)
+  const [gpsInput,   setGpsInput]   = useState('')
+  const [coords,     setCoords]     = useState([])
+  const [routeKm,    setRouteKm]    = useState(0)
+  const [playing,    setPlaying]    = useState(false)
+  const [progress,   setProgress]   = useState(0)
+  const [speedIdx,   setSpeedIdx]   = useState(1)
+  const [showPanel,  setShowPanel]  = useState(true)
+  const [parseErr,   setParseErr]   = useState('')
 
   useEffect(()=>{ if(active&&!activated) setActivated(true) },[active,activated])
   useEffect(()=>{
@@ -647,7 +678,18 @@ function MapTab({ active }) {
       attribution:'© <a href="https://openstreetmap.org" style="color:#555">OSM</a> © <a href="https://carto.com" style="color:#555">CARTO</a>',maxZoom:19
     }).addTo(map)
     mapObj.current=map
+    setMapReady(true)
   },[activated])
+
+  // XML 업로드 시 자동 로드
+  useEffect(()=>{
+    if(!uploadedGPS||!mapReady) return
+    setGpsInput(uploadedGPS)
+    setParseErr('')
+    loadRouteFrom(uploadedGPS)
+    onUploadConsumed?.()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[uploadedGPS, mapReady])
   useEffect(()=>{ if(active&&mapObj.current) setTimeout(()=>mapObj.current.invalidateSize(),50) },[active])
   useEffect(()=>{ coordsRef.current=coords },[coords])
 
@@ -661,10 +703,10 @@ function MapTab({ active }) {
     if(n>last){ for(let i=last+1;i<=Math.min(n,segs.length-1);i++) segs[i].setStyle({opacity:1}); lastVisibleRef.current=Math.min(n,segs.length-1) }
     else if(n<last){ for(let i=n+1;i<=last;i++) segs[i].setStyle({opacity:0}); lastVisibleRef.current=n }
   }
-  const loadRoute=()=>{
+  const loadRouteFrom=(inputStr)=>{
     setParseErr('')
     try {
-      const pts=parseGPS(gpsInput)
+      const pts=parseGPS(inputStr)
       let dist=0; for(let i=1;i<pts.length;i++) dist+=haversine(pts[i-1].lat,pts[i-1].lng,pts[i].lat,pts[i].lng)
       setRouteKm(parseFloat(dist.toFixed(2))); setCoords(pts); coordsRef.current=pts
       cancelAnimationFrame(rafId.current); playingRef.current=false; progressRef.current=0
@@ -734,7 +776,7 @@ function MapTab({ active }) {
         {parseErr&&<div style={{color:C.red,fontSize:12,marginTop:5}}>{parseErr}</div>}
         <div style={{display:'flex',gap:8,marginTop:10}}>
           <button onClick={()=>{setGpsInput(SAMPLE_GPS);setParseErr('')}} style={{flex:1,background:C.card2,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px',color:C.muted,fontSize:13,fontWeight:700,cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>샘플</button>
-          <button onClick={loadRoute} disabled={!gpsInput.trim()} style={{flex:2,background:C.lime,border:'none',borderRadius:10,padding:'10px',color:'#000',fontSize:13,fontWeight:900,cursor:'pointer',opacity:gpsInput.trim()?1:0.5,WebkitTapHighlightColor:'transparent'}}>경로 불러오기</button>
+          <button onClick={()=>loadRouteFrom(gpsInput)} disabled={!gpsInput.trim()} style={{flex:2,background:C.lime,border:'none',borderRadius:10,padding:'10px',color:'#000',fontSize:13,fontWeight:900,cursor:'pointer',opacity:gpsInput.trim()?1:0.5,WebkitTapHighlightColor:'transparent'}}>경로 불러오기</button>
         </div>
       </div>}
       {coords.length>0&&<div style={{background:C.card,borderRadius:14,padding:'12px 14px'}}>
@@ -879,12 +921,31 @@ function SettingsTab() {
    MAIN APP
 ───────────────────────────────────────── */
 export default function App() {
-  const [runs,       setRuns]       = useState([])
-  const [loading,    setLoading]    = useState(true)
-  const [tab,        setTab]        = useState(0)
-  const [showAdd,    setShowAdd]    = useState(false)
-  const [celebRun,   setCelebRun]   = useState(null)
-  const [error,      setError]      = useState('')
+  const [runs,        setRuns]        = useState([])
+  const [loading,     setLoading]     = useState(true)
+  const [tab,         setTab]         = useState(0)
+  const [showAdd,     setShowAdd]     = useState(false)
+  const [celebRun,    setCelebRun]    = useState(null)
+  const [error,       setError]       = useState('')
+  const [uploadedGPS, setUploadedGPS] = useState(null)
+  const fileInputRef = useRef(null)
+
+  const handleXMLUpload = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      try {
+        const pts = parseXMLtoGPS(evt.target.result)
+        if (pts.length < 2) throw new Error('좌표가 2개 미만입니다.')
+        setUploadedGPS(JSON.stringify(pts.map(p=>[p.lat,p.lng])))
+        setTab(2)
+        setError('')
+      } catch (err) { setError(err.message) }
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
 
   const fetchRuns = useCallback(async () => {
     setLoading(true); setError('')
@@ -923,7 +984,12 @@ export default function App() {
       <div style={{position:'sticky',top:0,zIndex:50,background:'rgba(0,0,0,0.9)',backdropFilter:'blur(20px)',borderBottom:`1px solid ${C.border}`,padding:'calc(env(safe-area-inset-top) + 12px) 20px 12px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
         <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:C.white}}>RUNNING</div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
-          {error&&<div style={{fontSize:11,color:C.red,fontWeight:700}}>{error}</div>}
+          {error&&<div style={{fontSize:11,color:C.red,fontWeight:700,maxWidth:140,textOverflow:'ellipsis',overflow:'hidden',whiteSpace:'nowrap'}} title={error}>{error}</div>}
+          {/* XML 업로드 */}
+          <input ref={fileInputRef} type="file" accept=".gpx,.xml,.kml" onChange={handleXMLUpload} style={{display:'none'}}/>
+          <button onClick={()=>fileInputRef.current?.click()} style={{background:'none',border:`1px solid ${C.lime}44`,borderRadius:20,padding:'5px 12px',color:C.lime,fontSize:11,fontWeight:800,cursor:'pointer',WebkitTapHighlightColor:'transparent',letterSpacing:'0.1em',display:'flex',alignItems:'center',gap:4}}>
+            <span style={{fontSize:13}}>↑</span>XML
+          </button>
           <button onClick={fetchRuns} style={{background:'none',border:`1px solid ${C.border}`,borderRadius:20,padding:'5px 12px',color:C.muted,fontSize:12,fontWeight:700,cursor:'pointer',WebkitTapHighlightColor:'transparent',letterSpacing:'0.06em'}}>↻</button>
         </div>
       </div>
@@ -938,7 +1004,7 @@ export default function App() {
           <>
             {tab===0&&<HomeTab runs={runs} onAdd={()=>setShowAdd(true)}/>}
             {tab===1&&<RecordsTab runs={runs} onAdd={()=>setShowAdd(true)} onDelete={handleDelete}/>}
-            <div style={{display:tab===2?'block':'none'}}><MapTab active={tab===2}/></div>
+            <div style={{display:tab===2?'block':'none'}}><MapTab active={tab===2} uploadedGPS={uploadedGPS} onUploadConsumed={()=>setUploadedGPS(null)}/></div>
             {tab===3&&<StatsTab runs={runs}/>}
             {tab===4&&<AITab runs={runs}/>}
             {tab===5&&<SettingsTab/>}
