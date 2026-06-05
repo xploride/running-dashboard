@@ -82,6 +82,16 @@ function formatDuration(secs) {
   return h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`
 }
 
+// gpxStore에서 날짜 키 조회 — UTC vs KST 오차(±1일) 허용
+function gpxLookup(store, date) {
+  if (!store || !date) return null
+  if (store[date]) return store[date]
+  const d = new Date(date)
+  const prev = new Date(d); prev.setUTCDate(prev.getUTCDate() - 1)
+  const next = new Date(d); next.setUTCDate(next.getUTCDate() + 1)
+  return store[prev.toISOString().slice(0,10)] || store[next.toISOString().slice(0,10)] || null
+}
+
 // GPX 전용 파서 — 좌표 + 고도·시간·심박수 메타데이터 추출
 function parseGPXFile(xmlText) {
   const doc = new DOMParser().parseFromString(xmlText, 'application/xml')
@@ -593,10 +603,12 @@ function RecordsTab({ runs, onAdd, onDelete, gpxStore, onViewRoute }) {
                   </div>
                   {r.note&&<div style={{color:C.muted,fontSize:12,marginTop:8,fontStyle:'italic'}}>"{r.note}"</div>}
 
-                  {/* 경로 보기 버튼 — GPX 출처 기록이거나 세션에 좌표가 있을 때 표시 */}
-                  {(r.source === 'gpx' || gpxStore?.[r.date]) && (
-                    <button onClick={e=>{e.stopPropagation();onViewRoute(r.date)}}
-                      style={{marginTop:10,width:'100%',background:`${C.lime}18`,border:`1px solid ${C.lime}55`,borderRadius:10,padding:'9px',color:C.lime,fontSize:12,fontWeight:800,letterSpacing:'0.08em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+                  {/* 경로 보기 버튼 — GPX 출처 기록이거나 세션에 좌표가 있을 때 표시 (±1일 허용) */}
+                  {(r.source === 'gpx' || gpxLookup(gpxStore, r.date)) && (
+                    <button
+                      onClick={e=>{e.stopPropagation();onViewRoute(r.date)}}
+                      onTouchEnd={e=>{e.stopPropagation();e.preventDefault();onViewRoute(r.date)}}
+                      style={{marginTop:10,width:'100%',background:`${C.lime}18`,border:`1px solid ${C.lime}55`,borderRadius:10,padding:'9px',color:C.lime,fontSize:12,fontWeight:800,letterSpacing:'0.08em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent',touchAction:'manipulation',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
                       <span style={{fontSize:14}}>▶</span> 경로 보기
                     </button>
                   )}
@@ -1399,9 +1411,9 @@ export default function App() {
     setTab(2)
   }
 
-  // LOG 탭 "경로 보기" — gpxStore에서 날짜 매칭 후 MAP 탭으로 이동
+  // LOG 탭 "경로 보기" — gpxStore에서 ±1일 허용 날짜 매칭 후 MAP 탭으로 이동
   const handleViewRoute = (date) => {
-    const gpx = gpxStore[date]
+    const gpx = gpxLookup(gpxStore, date)
     if (!gpx) return
     storeGPX(gpx.coords, gpx.meta)
     setAutoPlay(true)
