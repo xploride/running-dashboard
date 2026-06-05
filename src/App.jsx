@@ -141,17 +141,30 @@ function FormField({ label, children }) {
   )
 }
 
-/* ════════════════ 지도 탭 (Leaflet + OpenStreetMap) ════════════════ */
+/* ════════════════ 지도 탭 — Apple Health 스타일 ════════════════ */
+
+// 그린 → 옐로우 색상 보간 (Apple Fitness 팔레트)
+function gradColor(t) {
+  // #30D158 (48,209,88) → #FFD60A (255,214,10)
+  const r = Math.round(48  + (255 - 48)  * t)
+  const g = Math.round(209 + (214 - 209) * t)
+  const b = Math.round(88  + (10  - 88)  * t)
+  return `rgb(${r},${g},${b})`
+}
+
+const GRAD_SEGS = 80 // 그라데이션 분할 수
+
 function MapTab({ active }) {
-  const mapRef      = useRef(null)
-  const mapObj      = useRef(null)
-  const bgLine      = useRef(null)
-  const animLine    = useRef(null)
-  const runnerMark  = useRef(null)
-  const rafId       = useRef(null)
-  const progressRef = useRef(0)
-  const playingRef  = useRef(false)
-  const coordsRef   = useRef([])
+  const mapRef         = useRef(null)
+  const mapObj         = useRef(null)
+  const bgLineRef      = useRef(null)
+  const gradSegsRef    = useRef([])   // 그라데이션 세그먼트 배열
+  const lastVisibleRef = useRef(-1)   // 마지막으로 표시된 세그먼트 인덱스
+  const runnerRef      = useRef(null)
+  const rafId          = useRef(null)
+  const progressRef    = useRef(0)
+  const playingRef     = useRef(false)
+  const coordsRef      = useRef([])
 
   const [activated, setActivated] = useState(false)
   const [gpsInput,  setGpsInput]  = useState('')
@@ -163,51 +176,52 @@ function MapTab({ active }) {
   const [showPanel, setShowPanel] = useState(true)
   const [parseErr,  setParseErr]  = useState('')
 
-  // 처음 방문 시 활성화
   useEffect(() => { if (active && !activated) setActivated(true) }, [active, activated])
 
-  // 지도 초기화 (한 번만)
+  // 지도 초기화
   useEffect(() => {
     if (!activated || !mapRef.current || mapObj.current) return
-
     const map = L.map(mapRef.current, {
-      center: [37.5665, 126.9780],
-      zoom: 13,
-      zoomControl: true,
+      center: [37.5665, 126.9780], zoom: 13,
+      zoomControl: true, attributionControl: true,
     })
-
-    // CartoDB Dark Matter — API 키·도메인 등록 불필요
-    L.tileLayer(
-      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-      {
-        attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a> © <a href="https://carto.com">CARTO</a>',
-        maxZoom: 19,
-      }
-    ).addTo(map)
-
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '© <a href="https://openstreetmap.org" style="color:#555">OSM</a> © <a href="https://carto.com" style="color:#555">CARTO</a>',
+      maxZoom: 19,
+    }).addTo(map)
     mapObj.current = map
   }, [activated])
 
-  // 탭 전환 시 지도 크기 재계산 (display:none 해제 후 필요)
   useEffect(() => {
-    if (active && mapObj.current) {
-      setTimeout(() => mapObj.current.invalidateSize(), 50)
-    }
+    if (active && mapObj.current) setTimeout(() => mapObj.current.invalidateSize(), 50)
   }, [active])
 
   useEffect(() => { coordsRef.current = coords }, [coords])
 
-  /* 지도 레이어 정리 */
+  /* 기존 레이어 전체 제거 */
   const clearLayers = () => {
-    bgLine.current?.remove();     bgLine.current = null
-    animLine.current?.remove();   animLine.current = null
-    runnerMark.current?.remove(); runnerMark.current = null
+    bgLineRef.current?.remove(); bgLineRef.current = null
+    gradSegsRef.current.forEach(s => s.remove())
+    gradSegsRef.current = []
+    lastVisibleRef.current = -1
+    runnerRef.current?.remove(); runnerRef.current = null
   }
 
-  /* 커스텀 아이콘 생성 헬퍼 */
-  const divIcon = (html, size = 32) => L.divIcon({
-    html, className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2],
-  })
+  /* 그라데이션 세그먼트를 n개 표시 (증분 업데이트) */
+  const showSegsUpTo = (n) => {
+    const segs = gradSegsRef.current
+    const last = lastVisibleRef.current
+    if (n > last) {
+      for (let i = last + 1; i <= Math.min(n, segs.length - 1); i++)
+        segs[i].setStyle({ opacity: 1 })
+      lastVisibleRef.current = Math.min(n, segs.length - 1)
+    } else if (n < last) {
+      // 리셋/스크럽으로 뒤로 갈 때
+      for (let i = n + 1; i <= last; i++)
+        segs[i].setStyle({ opacity: 0 })
+      lastVisibleRef.current = n
+    }
+  }
 
   /* 경로 불러오기 */
   const loadRoute = () => {
@@ -218,56 +232,87 @@ function MapTab({ active }) {
       for (let i = 1; i < pts.length; i++)
         dist += haversine(pts[i-1].lat, pts[i-1].lng, pts[i].lat, pts[i].lng)
       setRouteKm(parseFloat(dist.toFixed(2)))
-      setCoords(pts)
-      coordsRef.current = pts
+      setCoords(pts); coordsRef.current = pts
 
       cancelAnimationFrame(rafId.current)
-      playingRef.current = false
-      progressRef.current = 0
+      playingRef.current = false; progressRef.current = 0
       setPlaying(false); setProgress(0)
       clearLayers()
 
       const map = mapObj.current
       const lls = pts.map(p => [p.lat, p.lng])
+      const n   = pts.length
 
-      // 배경 경로 (흐린 회색)
-      bgLine.current = L.polyline(lls, {
-        color: '#4b5563', weight: 5, opacity: 0.45,
+      // ① 배경선 — 반투명 흰색 (애플 스타일 미답 경로)
+      bgLineRef.current = L.polyline(lls, {
+        color: '#ffffff', weight: 4, opacity: 0.12,
+        lineCap: 'round', lineJoin: 'round',
       }).addTo(map)
 
-      // 애니메이션 경로 (처음엔 첫 점만)
-      animLine.current = L.polyline([lls[0]], {
-        color: '#7c3aed', weight: 5, opacity: 1,
-      }).addTo(map)
+      // ② 그라데이션 세그먼트 — 전부 opacity 0으로 사전 생성
+      const segs = Math.min(GRAD_SEGS, n - 1)
+      for (let i = 0; i < segs; i++) {
+        const si = Math.floor(i * (n - 1) / segs)
+        const ei = Math.floor((i + 1) * (n - 1) / segs) + 1
+        const color = gradColor(i / (segs - 1))
+        const seg = L.polyline(
+          pts.slice(si, Math.min(ei, n)).map(p => [p.lat, p.lng]),
+          { color, weight: 6, opacity: 0, lineCap: 'round', lineJoin: 'round', smoothFactor: 0 }
+        ).addTo(map)
+        gradSegsRef.current.push(seg)
+      }
 
-      // 출발 마커
+      // ③ 출발점 — 초록 원
       L.marker(lls[0], {
-        icon: divIcon('<div style="background:#34d399;color:#fff;font-size:10px;font-weight:700;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4)">S</div>', 24),
+        icon: L.divIcon({
+          html: `<div style="
+            width:18px;height:18px;border-radius:50%;
+            background:#30D158;
+            border:3px solid #fff;
+            box-shadow:0 0 10px 3px rgba(48,209,88,.55);
+          "></div>`,
+          className: '', iconSize: [18, 18], iconAnchor: [9, 9],
+        }),
+        zIndexOffset: 100,
       }).addTo(map)
 
-      // 도착 마커
-      L.marker(lls[lls.length - 1], {
-        icon: divIcon('<div style="background:#f87171;color:#fff;font-size:10px;font-weight:700;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4)">F</div>', 24),
+      // ④ 도착점 — 빨간 원
+      L.marker(lls[n - 1], {
+        icon: L.divIcon({
+          html: `<div style="
+            width:18px;height:18px;border-radius:50%;
+            background:#FF453A;
+            border:3px solid #fff;
+            box-shadow:0 0 10px 3px rgba(255,69,58,.55);
+          "></div>`,
+          className: '', iconSize: [18, 18], iconAnchor: [9, 9],
+        }),
+        zIndexOffset: 100,
       }).addTo(map)
 
-      // 러너 마커
-      runnerMark.current = L.marker(lls[0], {
-        icon: divIcon('<div style="font-size:26px;line-height:1;filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))">🏃</div>', 34),
+      // ⑤ 이동 포인트 — 흰색 pulse
+      runnerRef.current = L.marker(lls[0], {
+        icon: L.divIcon({
+          html: `<div class="rp-wrap">
+            <div class="rp-ring rp-r1"></div>
+            <div class="rp-ring rp-r2"></div>
+            <div class="rp-ring rp-r3"></div>
+            <div class="rp-core"></div>
+          </div>`,
+          className: '', iconSize: [40, 40], iconAnchor: [20, 20],
+        }),
         zIndexOffset: 1000,
       }).addTo(map)
 
-      // 경계 맞춤
-      map.fitBounds(L.latLngBounds(lls), { padding: [40, 40] })
+      map.fitBounds(L.latLngBounds(lls), { padding: [48, 48] })
       setShowPanel(false)
-    } catch (e) {
-      setParseErr(e.message)
-    }
+    } catch (e) { setParseErr(e.message) }
   }
 
   /* 재생 */
   const play = () => {
     if (playingRef.current) return
-    if (progressRef.current >= 1) { progressRef.current = 0; setProgress(0) }
+    if (progressRef.current >= 1) { progressRef.current = 0; setProgress(0); showSegsUpTo(-1) }
     playingRef.current = true; setPlaying(true)
     const speed = ANIM_SPEEDS[speedIdx].value
     let lastTs = null
@@ -284,21 +329,20 @@ function MapTab({ active }) {
       const rawIdx = progressRef.current * (total - 1)
       const fi = Math.floor(rawIdx), frac = rawIdx - fi
 
-      // 러너 위치 보간 (60fps)
+      // 이동 포인트
       if (fi < total - 1) {
         const a = coordsRef.current[fi], b = coordsRef.current[fi + 1]
-        const lat = a.lat + (b.lat - a.lat) * frac
-        const lng = a.lng + (b.lng - a.lng) * frac
-        runnerMark.current?.setLatLng([lat, lng])
+        runnerRef.current?.setLatLng([
+          a.lat + (b.lat - a.lat) * frac,
+          a.lng + (b.lng - a.lng) * frac,
+        ])
       }
 
-      // 폴리라인 성장 — Leaflet setLatLngs는 효율적이라 매 프레임 OK
-      animLine.current?.setLatLngs(
-        coordsRef.current.slice(0, fi + 2).map(p => [p.lat, p.lng])
-      )
+      // 그라데이션 세그먼트 증분 표시
+      const segIdx = Math.floor(progressRef.current * (gradSegsRef.current.length - 1))
+      showSegsUpTo(segIdx)
 
       setProgress(progressRef.current)
-
       if (progressRef.current < 1) rafId.current = requestAnimationFrame(frame)
       else { playingRef.current = false; setPlaying(false) }
     }
@@ -311,24 +355,23 @@ function MapTab({ active }) {
   }
 
   const reset = () => {
-    pause()
-    progressRef.current = 0; setProgress(0)
+    pause(); progressRef.current = 0; setProgress(0)
+    showSegsUpTo(-1)
     const c = coordsRef.current
-    if (!c.length) return
-    animLine.current?.setLatLngs([[c[0].lat, c[0].lng]])
-    runnerMark.current?.setLatLng([c[0].lat, c[0].lng])
+    if (c.length) runnerRef.current?.setLatLng([c[0].lat, c[0].lng])
   }
 
-  /* 진행 바 스크럽 */
+  /* 스크럽 */
   const scrub = (e) => {
     const rect = e.currentTarget.getBoundingClientRect()
     const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
     progressRef.current = pct; setProgress(pct)
     const total = coordsRef.current.length
     if (!total) return
-    const fi = Math.min(Math.floor(pct * (total - 1)), total - 2)
-    animLine.current?.setLatLngs(coordsRef.current.slice(0, fi + 2).map(p => [p.lat, p.lng]))
-    runnerMark.current?.setLatLng([coordsRef.current[fi].lat, coordsRef.current[fi].lng])
+    const fi     = Math.min(Math.floor(pct * (total - 1)), total - 2)
+    const segIdx = Math.floor(pct * (gradSegsRef.current.length - 1))
+    showSegsUpTo(segIdx)
+    runnerRef.current?.setLatLng([coordsRef.current[fi].lat, coordsRef.current[fi].lng])
   }
 
   const pctDone = Math.round(progress * 100)
@@ -337,22 +380,21 @@ function MapTab({ active }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: 'calc(100dvh - 136px)' }}>
       {/* 지도 */}
-      <div style={{ flex: 1, position: 'relative', borderRadius: 14, overflow: 'hidden', minHeight: 220 }}>
+      <div style={{ flex: 1, position: 'relative', borderRadius: 16, overflow: 'hidden', minHeight: 220 }}>
         <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
 
         {/* 진행 오버레이 */}
         {coords.length > 0 && (
-          <div style={{ position: 'absolute', top: 10, left: 10, background: 'rgba(22,23,29,0.85)', borderRadius: 10, padding: '7px 12px', fontSize: 13, backdropFilter: 'blur(4px)', zIndex: 1000 }}>
-            <span style={{ color: '#a78bfa', fontWeight: 700 }}>{kmDone}</span>
-            <span style={{ color: '#9ca3af' }}> / {routeKm} km</span>
-            <span style={{ color: '#6b7280', marginLeft: 8 }}>{pctDone}%</span>
+          <div style={{ position: 'absolute', top: 12, left: 12, background: 'rgba(0,0,0,0.6)', borderRadius: 12, padding: '8px 14px', fontSize: 13, backdropFilter: 'blur(8px)', zIndex: 1000, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ color: gradColor(progress), fontWeight: 700, fontSize: 15 }}>{kmDone}</span>
+            <span style={{ color: 'rgba(255,255,255,0.45)', fontSize: 12 }}>/ {routeKm} km</span>
           </div>
         )}
 
         {/* 경로 입력 토글 */}
         <button onClick={() => setShowPanel(v => !v)}
-          style={{ position: 'absolute', top: 10, right: 10, background: 'rgba(22,23,29,0.85)', border: '1px solid #4b5563', borderRadius: 10, padding: '7px 12px', color: '#c084fc', fontSize: 13, cursor: 'pointer', backdropFilter: 'blur(4px)', zIndex: 1000, WebkitTapHighlightColor: 'transparent' }}>
-          {showPanel ? '✕ 닫기' : '📍 경로 입력'}
+          style={{ position: 'absolute', top: 12, right: 12, background: 'rgba(0,0,0,0.6)', border: 'none', borderRadius: 12, padding: '8px 14px', color: '#fff', fontSize: 13, cursor: 'pointer', backdropFilter: 'blur(8px)', zIndex: 1000, WebkitTapHighlightColor: 'transparent' }}>
+          {showPanel ? '✕' : '📍 경로 입력'}
         </button>
       </div>
 
@@ -360,23 +402,15 @@ function MapTab({ active }) {
       {showPanel && (
         <div style={{ background: '#1f2028', borderRadius: 14, padding: 14 }}>
           <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>
-            GPS 좌표 입력 — <code style={{ color: '#6b7280', fontSize: 11 }}>[[lat,lng], ...]</code> 또는 <code style={{ color: '#6b7280', fontSize: 11 }}>[{'{'}lat,lng{'}'},...]</code>
+            GPS 좌표 — <code style={{ color: '#6b7280', fontSize: 11 }}>[[lat,lng], ...]</code> 또는 <code style={{ color: '#6b7280', fontSize: 11 }}>[{'{'}lat,lng{'}'},...]</code>
           </div>
-          <textarea
-            value={gpsInput}
-            onChange={e => { setGpsInput(e.target.value); setParseErr('') }}
-            rows={3}
-            placeholder="[[37.5195, 126.9393], [37.5199, 126.9400], ...]"
-            style={{ ...inputStyle, resize: 'vertical', fontSize: 12, fontFamily: 'monospace' }}
-          />
+          <textarea value={gpsInput} onChange={e => { setGpsInput(e.target.value); setParseErr('') }}
+            rows={3} placeholder="[[37.5195, 126.9393], ...]"
+            style={{ ...inputStyle, resize: 'vertical', fontSize: 12, fontFamily: 'monospace' }} />
           {parseErr && <div style={{ color: '#fca5a5', fontSize: 12, marginTop: 5 }}>{parseErr}</div>}
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-            <TouchBtn onClick={() => { setGpsInput(SAMPLE_GPS); setParseErr('') }} color="#2e303a" style={{ flex: 1, fontSize: 13, padding: '10px' }}>
-              샘플
-            </TouchBtn>
-            <TouchBtn onClick={loadRoute} disabled={!gpsInput.trim()} style={{ flex: 2, fontSize: 13, padding: '10px' }}>
-              경로 불러오기
-            </TouchBtn>
+            <TouchBtn onClick={() => { setGpsInput(SAMPLE_GPS); setParseErr('') }} color="#2e303a" style={{ flex: 1, fontSize: 13, padding: '10px' }}>샘플</TouchBtn>
+            <TouchBtn onClick={loadRoute} disabled={!gpsInput.trim()} style={{ flex: 2, fontSize: 13, padding: '10px' }}>경로 불러오기</TouchBtn>
           </div>
         </div>
       )}
@@ -384,41 +418,34 @@ function MapTab({ active }) {
       {/* 재생 컨트롤 */}
       {coords.length > 0 && (
         <div style={{ background: '#1f2028', borderRadius: 14, padding: '12px 14px' }}>
-          {/* 진행 바 */}
-          <div onClick={scrub}
-            style={{ background: '#2e303a', borderRadius: 4, height: 6, marginBottom: 12, cursor: 'pointer', overflow: 'hidden' }}>
-            <div style={{ background: 'linear-gradient(90deg,#7c3aed,#a78bfa)', height: '100%', width: `${pctDone}%`, borderRadius: 4, transition: 'width .05s linear' }} />
+          {/* 진행 바 — 그린→옐로 그라데이션 */}
+          <div onClick={scrub} style={{ background: '#2e303a', borderRadius: 4, height: 6, marginBottom: 12, cursor: 'pointer', overflow: 'hidden' }}>
+            <div style={{ background: 'linear-gradient(90deg,#30D158,#FFD60A)', height: '100%', width: `${pctDone}%`, borderRadius: 4, transition: 'width .05s linear' }} />
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {/* 리셋 */}
             <button onClick={reset}
               style={{ background: '#2e303a', border: 'none', borderRadius: 10, width: 44, height: 44, color: '#9ca3af', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, WebkitTapHighlightColor: 'transparent' }}>
               ⏮
             </button>
-
-            {/* 재생 / 일시정지 */}
             <button onClick={playing ? pause : play}
-              style={{ flex: 1, background: playing ? '#5b21b6' : '#7c3aed', border: 'none', borderRadius: 12, height: 44, color: '#fff', cursor: 'pointer', fontSize: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', WebkitTapHighlightColor: 'transparent' }}>
+              style={{ flex: 1, background: playing ? '#1c7a38' : '#30D158', border: 'none', borderRadius: 12, height: 44, color: '#fff', cursor: 'pointer', fontSize: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', WebkitTapHighlightColor: 'transparent' }}>
               {playing ? '⏸' : progress >= 1 ? '↺' : '▶'}
             </button>
-
-            {/* 속도 선택 */}
             <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
               {ANIM_SPEEDS.map((s, i) => (
                 <button key={i} onClick={() => setSpeedIdx(i)}
-                  style={{ background: speedIdx === i ? '#5b21b6' : '#2e303a', border: 'none', borderRadius: 8, width: 36, height: 36, color: speedIdx === i ? '#fff' : '#9ca3af', cursor: 'pointer', fontSize: 12, fontWeight: 600, WebkitTapHighlightColor: 'transparent' }}>
+                  style={{ background: speedIdx === i ? '#30D158' : '#2e303a', border: 'none', borderRadius: 8, width: 36, height: 36, color: speedIdx === i ? '#000' : '#9ca3af', cursor: 'pointer', fontSize: 12, fontWeight: 700, WebkitTapHighlightColor: 'transparent' }}>
                   {s.label}
                 </button>
               ))}
             </div>
           </div>
 
-          {/* 경로 요약 */}
           <div style={{ display: 'flex', gap: 16, marginTop: 10, paddingTop: 10, borderTop: '1px solid #2e303a' }}>
             <div style={{ flex: 1, textAlign: 'center' }}>
               <div style={{ color: '#6b7280', fontSize: 11 }}>전체 거리</div>
-              <div style={{ color: '#34d399', fontWeight: 700, fontSize: 15 }}>{routeKm} km</div>
+              <div style={{ color: '#30D158', fontWeight: 700, fontSize: 15 }}>{routeKm} km</div>
             </div>
             <div style={{ flex: 1, textAlign: 'center' }}>
               <div style={{ color: '#6b7280', fontSize: 11 }}>좌표 수</div>
@@ -426,7 +453,7 @@ function MapTab({ active }) {
             </div>
             <div style={{ flex: 1, textAlign: 'center' }}>
               <div style={{ color: '#6b7280', fontSize: 11 }}>진행 거리</div>
-              <div style={{ color: '#a78bfa', fontWeight: 700, fontSize: 15 }}>{kmDone} km</div>
+              <div style={{ color: '#FFD60A', fontWeight: 700, fontSize: 15 }}>{kmDone} km</div>
             </div>
           </div>
         </div>
@@ -806,8 +833,40 @@ export default function App() {
         input[type="number"] { -moz-appearance: textfield; }
         input[type="number"]::-webkit-outer-spin-button,
         input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
-        .leaflet-container { font-family: inherit; }
-        .leaflet-control-attribution { font-size: 10px !important; }
+        .leaflet-container { font-family: inherit; background: #1a1a1a; }
+        .leaflet-control-attribution { font-size: 9px !important; background: rgba(0,0,0,0.4) !important; color: #555 !important; }
+        .leaflet-control-attribution a { color: #555 !important; }
+        .leaflet-control-zoom a { background: rgba(0,0,0,0.7) !important; color: #fff !important; border-color: #333 !important; }
+
+        /* ── 이동 포인트 pulse 애니메이션 ── */
+        .rp-wrap {
+          position: relative; width: 40px; height: 40px;
+          transform: translate(-50%, -50%);
+        }
+        .rp-core {
+          position: absolute; top: 50%; left: 50%;
+          transform: translate(-50%, -50%);
+          width: 14px; height: 14px;
+          background: #ffffff;
+          border-radius: 50%;
+          box-shadow: 0 0 0 3px rgba(255,255,255,0.35),
+                      0 0 16px 4px rgba(255,255,255,0.6);
+          z-index: 3;
+        }
+        .rp-ring {
+          position: absolute; top: 50%; left: 50%;
+          transform: translate(-50%, -50%) scale(0);
+          border-radius: 50%;
+          background: rgba(255, 255, 255, 0.35);
+          animation: rpPulse 2s ease-out infinite;
+        }
+        .rp-r1 { width: 36px; height: 36px; animation-delay: 0s; }
+        .rp-r2 { width: 36px; height: 36px; animation-delay: 0.65s; }
+        .rp-r3 { width: 36px; height: 36px; animation-delay: 1.3s; }
+        @keyframes rpPulse {
+          0%   { transform: translate(-50%,-50%) scale(0.3); opacity: 0.8; }
+          100% { transform: translate(-50%,-50%) scale(1.6); opacity: 0; }
+        }
       `}</style>
     </div>
   )
