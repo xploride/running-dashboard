@@ -139,10 +139,11 @@ function parseGPXFile(xmlText) {
     routeDist += haversine(points[i-1].lat, points[i-1].lng, points[i].lat, points[i].lng)
   routeDist = parseFloat(routeDist.toFixed(2))
 
-  // 날짜 (YYYY-MM-DD) — trkpt time 우선, fallback 오늘
+  // 날짜 (YYYY-MM-DD) — GPX 타임스탬프는 UTC이므로 KST(+9h) 보정 후 날짜 추출
   const firstTimeStr = points.find(p => p.time)?.time
+  const KST_OFFSET = 9 * 60 * 60 * 1000
   const runDate = firstTimeStr
-    ? new Date(firstTimeStr).toISOString().slice(0, 10)
+    ? new Date(new Date(firstTimeStr).getTime() + KST_OFFSET).toISOString().slice(0, 10)
     : new Date().toISOString().slice(0, 10)
 
   // 페이스 (분/km): duration(sec)/60 / distance
@@ -157,6 +158,7 @@ function parseGPXFile(xmlText) {
     hr:        avgHR || 0,
     calories:  0,           // GPX에는 칼로리 정보 없음
     note:      name || 'GPX',
+    source:    'gpx',
   }
 
   return {
@@ -593,8 +595,8 @@ function RecordsTab({ runs, onAdd, onDelete, gpxStore, onViewRoute }) {
                   </div>
                   {r.note&&<div style={{color:C.muted,fontSize:12,marginTop:8,fontStyle:'italic'}}>"{r.note}"</div>}
 
-                  {/* 경로 보기 버튼 — gpxStore에 해당 날짜 GPX가 있을 때만 표시 */}
-                  {gpxStore?.[r.date] && (
+                  {/* 경로 보기 버튼 — GPX 출처 기록이거나 세션에 좌표가 있을 때 표시 */}
+                  {(r.source === 'gpx' || gpxStore?.[r.date]) && (
                     <button onClick={e=>{e.stopPropagation();onViewRoute(r.date)}}
                       style={{marginTop:10,width:'100%',background:`${C.lime}18`,border:`1px solid ${C.lime}55`,borderRadius:10,padding:'9px',color:C.lime,fontSize:12,fontWeight:800,letterSpacing:'0.08em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
                       <span style={{fontSize:14}}>▶</span> 경로 보기
