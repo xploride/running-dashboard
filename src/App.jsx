@@ -841,7 +841,7 @@ export default function App() {
         /* ── 이동 포인트 pulse 애니메이션 ── */
         .rp-wrap {
           position: relative; width: 40px; height: 40px;
-          transform: translate(-50%, -50%);
+          /* iconAnchor:[20,20] 이 이미 중앙 정렬하므로 transform 불필요 */
         }
         .rp-core {
           position: absolute; top: 50%; left: 50%;
