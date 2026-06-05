@@ -1,871 +1,998 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import {
-  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer,
-} from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 
-/* ── 상수 ── */
+/* ─────────────────────────────────────────
+   DESIGN TOKENS
+───────────────────────────────────────── */
+const C = {
+  bg:     '#000000',
+  card:   '#111111',
+  card2:  '#1C1C1E',
+  border: '#2C2C2E',
+  lime:   '#C8F549',
+  orange: '#FF6B35',
+  red:    '#FF453A',
+  blue:   '#0A84FF',
+  white:  '#FFFFFF',
+  muted:  '#8E8E93',
+  dim:    '#3A3A3C',
+}
+
+const TABS = [
+  { id: 0, label: 'HOME',  icon: '⬤' },
+  { id: 1, label: 'LOG',   icon: '≡' },
+  { id: 2, label: 'MAP',   icon: '◎' },
+  { id: 3, label: 'STATS', icon: '▦' },
+  { id: 4, label: 'AI',    icon: '✦' },
+]
+
+const PACE_ZONES = [
+  { label: '회복',  min: 7.0, max: 99,  color: C.blue,   en: 'RECOVERY' },
+  { label: '편안',  min: 6.0, max: 7.0, color: '#30D158', en: 'EASY'     },
+  { label: '템포',  min: 5.0, max: 6.0, color: C.lime,   en: 'TEMPO'    },
+  { label: '속도',  min: 4.0, max: 5.0, color: C.orange, en: 'SPEED'    },
+  { label: '전력',  min: 0,   max: 4.0, color: C.red,    en: 'MAX'      },
+]
+
 const BIN_ID      = '6a212290da38895dfe84f187'
 const API_KEY     = '$2a$10$S4L4AI6Ixu.mcfT/xS3q4.37HRowJYcmydaG/Ib41bUflr2jIC.lS'
 const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`
 const CLAUDE_API  = 'https://api.anthropic.com/v1/messages'
-const GOALS       = { weeklyKm: 30, monthlyKm: 120, targetPace: 6.0 }
-
-const ANIM_SPEEDS = [
-  { label: '1×',  value: 1  },
-  { label: '3×',  value: 3  },
-  { label: '10×', value: 10 },
-  { label: '30×', value: 30 },
-]
+const ANIM_SPEEDS = [{ label:'1×',value:1},{label:'3×',value:3},{label:'10×',value:10},{label:'30×',value:30}]
 const ANIM_SECS_1X = 20
+const GRAD_SEGS    = 80
+const SAMPLE_GPS   = `[[37.5195,126.9393],[37.5199,126.9400],[37.5203,126.9408],[37.5207,126.9416],[37.5210,126.9424],[37.5213,126.9432],[37.5216,126.9440],[37.5219,126.9448],[37.5222,126.9456],[37.5225,126.9464],[37.5228,126.9472],[37.5231,126.9480],[37.5234,126.9487],[37.5237,126.9494],[37.5240,126.9500],[37.5243,126.9506],[37.5246,126.9511],[37.5248,126.9516],[37.5250,126.9521],[37.5252,126.9526],[37.5254,126.9531],[37.5256,126.9536],[37.5258,126.9541],[37.5260,126.9546],[37.5262,126.9551],[37.5264,126.9556],[37.5266,126.9561],[37.5268,126.9566],[37.5269,126.9571],[37.5270,126.9577]]`
 
-const TABS = [
-  { id: 0, label: '홈',   icon: '🏠' },
-  { id: 1, label: '기록', icon: '📋' },
-  { id: 2, label: '지도', icon: '🗺️' },
-  { id: 3, label: 'AI',   icon: '🤖' },
-  { id: 4, label: '설정', icon: '⚙️' },
-]
-
-const SHORTCUTS = [
-  { keys: 'N',      desc: '새 러닝 기록 추가' },
-  { keys: 'D',      desc: '홈 탭' },
-  { keys: 'A',      desc: 'AI 코치 탭' },
-  { keys: 'R',      desc: '데이터 새로고침' },
-  { keys: 'Esc',    desc: '모달 닫기' },
-  { keys: '↑ / ↓', desc: '기록 탐색' },
-  { keys: 'Del',    desc: '선택 기록 삭제' },
-]
-
-// 한강공원 인근 샘플 경로
-const SAMPLE_GPS = `[[37.5195,126.9393],[37.5199,126.9400],[37.5203,126.9408],[37.5207,126.9416],[37.5210,126.9424],[37.5213,126.9432],[37.5216,126.9440],[37.5219,126.9448],[37.5222,126.9456],[37.5225,126.9464],[37.5228,126.9472],[37.5231,126.9480],[37.5234,126.9487],[37.5237,126.9494],[37.5240,126.9500],[37.5243,126.9506],[37.5246,126.9511],[37.5248,126.9516],[37.5250,126.9521],[37.5252,126.9526],[37.5254,126.9531],[37.5256,126.9536],[37.5258,126.9541],[37.5260,126.9546],[37.5262,126.9551],[37.5264,126.9556],[37.5266,126.9561],[37.5268,126.9566],[37.5269,126.9571],[37.5270,126.9577]]`
-
-/* ── 유틸 ── */
+/* ─────────────────────────────────────────
+   UTILS
+───────────────────────────────────────── */
 function paceToStr(p) {
-  if (!p || p <= 0) return '-'
+  if (!p || p <= 0) return '--\'--"'
   const m = Math.floor(p), s = Math.round((p - m) * 60)
-  return `${m}:${s.toString().padStart(2, '0')}`
+  return `${m}'${s.toString().padStart(2,'0')}"`
 }
-
-function haversine(lat1, lon1, lat2, lon2) {
-  const R = 6371, r = Math.PI / 180
-  const dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dLon / 2) ** 2
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+function haversine(la1, lo1, la2, lo2) {
+  const R = 6371, r = Math.PI/180
+  const a = Math.sin((la2-la1)*r/2)**2 + Math.cos(la1*r)*Math.cos(la2*r)*Math.sin((lo2-lo1)*r/2)**2
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
 }
-
 function parseGPS(input) {
   const raw = JSON.parse(input.trim())
-  if (!Array.isArray(raw) || raw.length < 2)
-    throw new Error('최소 2개 이상의 좌표 배열이어야 합니다.')
-  return raw.map((p, i) => {
-    if (Array.isArray(p) && p.length >= 2) return { lat: +p[0], lng: +p[1] }
-    if (p && typeof p === 'object') {
-      const lat = p.lat ?? p.latitude
-      const lng = p.lng ?? p.longitude ?? p.lon
-      if (lat != null && lng != null) return { lat: +lat, lng: +lng }
-    }
+  if (!Array.isArray(raw) || raw.length < 2) throw new Error('최소 2개 이상 필요')
+  return raw.map((p,i) => {
+    if (Array.isArray(p) && p.length>=2) return { lat:+p[0], lng:+p[1] }
+    if (p?.lat!=null) return { lat:+p.lat, lng:+(p.lng??p.longitude??p.lon) }
     throw new Error(`index ${i}: 잘못된 형식`)
   })
 }
-
-/* ── 공용 스타일 ── */
-const inputStyle = {
-  width: '100%', boxSizing: 'border-box',
-  background: '#2e303a', border: '1px solid #4b5563', borderRadius: 10,
-  padding: '12px 14px', color: '#f3f4f6', fontSize: 16, outline: 'none',
-  WebkitAppearance: 'none',
-}
-const tooltipStyle = {
-  contentStyle: { background: '#1f2028', border: '1px solid #2e303a', borderRadius: 8, fontSize: 12 },
-  labelStyle: { color: '#f3f4f6' },
-}
-
-function TouchBtn({ onClick, children, color = '#7c3aed', disabled, style = {} }) {
-  return (
-    <button onClick={onClick} disabled={disabled} style={{
-      background: color, border: 'none', borderRadius: 12, padding: '14px 20px',
-      color: '#f3f4f6', cursor: disabled ? 'not-allowed' : 'pointer',
-      fontSize: 15, fontWeight: 600, opacity: disabled ? 0.5 : 1,
-      minHeight: 48, WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
-      ...style,
-    }}>{children}</button>
-  )
-}
-
-function GoalRing({ label, value, goal, unit, color }) {
-  const pct = Math.min(100, Math.round((value / goal) * 100))
-  const r = 34, circ = 2 * Math.PI * r, dash = (pct / 100) * circ
-  return (
-    <div style={{ textAlign: 'center', flex: '1 1 100px' }}>
-      <svg width="84" height="84" viewBox="0 0 84 84">
-        <circle cx="42" cy="42" r={r} fill="none" stroke="#2e303a" strokeWidth="8" />
-        <circle cx="42" cy="42" r={r} fill="none" stroke={color} strokeWidth="8"
-          strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
-          transform="rotate(-90 42 42)" style={{ transition: 'stroke-dasharray .7s ease' }} />
-        <text x="42" y="38" textAnchor="middle" fill="#f3f4f6" fontSize="13" fontWeight="bold">{pct}%</text>
-        <text x="42" y="53" textAnchor="middle" fill="#9ca3af" fontSize="8">{value}{unit}/{goal}{unit}</text>
-      </svg>
-      <div style={{ color: '#9ca3af', fontSize: 11, marginTop: 2 }}>{label}</div>
-    </div>
-  )
-}
-
-function StatCard({ label, value, sub, color }) {
-  return (
-    <div style={{ background: '#1f2028', borderRadius: 14, padding: '14px 16px', flex: '1 1 130px', minWidth: 120 }}>
-      <div style={{ color: '#9ca3af', fontSize: 11, marginBottom: 5 }}>{label}</div>
-      <div style={{ color: color || '#c084fc', fontSize: 22, fontWeight: 700, lineHeight: 1 }}>{value}</div>
-      {sub && <div style={{ color: '#6b7280', fontSize: 11, marginTop: 4 }}>{sub}</div>}
-    </div>
-  )
-}
-
-function ChartCard({ title, children }) {
-  return (
-    <div style={{ background: '#1f2028', borderRadius: 14, padding: 16, width: '100%', boxSizing: 'border-box' }}>
-      <div style={{ color: '#9ca3af', fontSize: 12, fontWeight: 500, marginBottom: 12 }}>{title}</div>
-      {children}
-    </div>
-  )
-}
-
-function FormField({ label, children }) {
-  return (
-    <div>
-      <label style={{ display: 'block', color: '#9ca3af', fontSize: 13, marginBottom: 5 }}>{label}</label>
-      {children}
-    </div>
-  )
-}
-
-/* ════════════════ 지도 탭 — Apple Health 스타일 ════════════════ */
-
-// 그린 → 옐로우 색상 보간 (Apple Fitness 팔레트)
 function gradColor(t) {
-  // #30D158 (48,209,88) → #FFD60A (255,214,10)
-  const r = Math.round(48  + (255 - 48)  * t)
-  const g = Math.round(209 + (214 - 209) * t)
-  const b = Math.round(88  + (10  - 88)  * t)
+  const r = Math.round(48+(255-48)*t), g = Math.round(209+(214-209)*t), b = Math.round(88+(10-88)*t)
   return `rgb(${r},${g},${b})`
 }
-
-const GRAD_SEGS = 80 // 그라데이션 분할 수
-
-function MapTab({ active }) {
-  const mapRef         = useRef(null)
-  const mapObj         = useRef(null)
-  const bgLineRef      = useRef(null)
-  const gradSegsRef    = useRef([])   // 그라데이션 세그먼트 배열
-  const lastVisibleRef = useRef(-1)   // 마지막으로 표시된 세그먼트 인덱스
-  const runnerRef      = useRef(null)
-  const rafId          = useRef(null)
-  const progressRef    = useRef(0)
-  const playingRef     = useRef(false)
-  const coordsRef      = useRef([])
-
-  const [activated, setActivated] = useState(false)
-  const [gpsInput,  setGpsInput]  = useState('')
-  const [coords,    setCoords]    = useState([])
-  const [routeKm,   setRouteKm]   = useState(0)
-  const [playing,   setPlaying]   = useState(false)
-  const [progress,  setProgress]  = useState(0)
-  const [speedIdx,  setSpeedIdx]  = useState(1)
-  const [showPanel, setShowPanel] = useState(true)
-  const [parseErr,  setParseErr]  = useState('')
-
-  useEffect(() => { if (active && !activated) setActivated(true) }, [active, activated])
-
-  // 지도 초기화
-  useEffect(() => {
-    if (!activated || !mapRef.current || mapObj.current) return
-    const map = L.map(mapRef.current, {
-      center: [37.5665, 126.9780], zoom: 13,
-      zoomControl: true, attributionControl: true,
-    })
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      attribution: '© <a href="https://openstreetmap.org" style="color:#555">OSM</a> © <a href="https://carto.com" style="color:#555">CARTO</a>',
-      maxZoom: 19,
-    }).addTo(map)
-    mapObj.current = map
-  }, [activated])
-
-  useEffect(() => {
-    if (active && mapObj.current) setTimeout(() => mapObj.current.invalidateSize(), 50)
-  }, [active])
-
-  useEffect(() => { coordsRef.current = coords }, [coords])
-
-  /* 기존 레이어 전체 제거 */
-  const clearLayers = () => {
-    bgLineRef.current?.remove(); bgLineRef.current = null
-    gradSegsRef.current.forEach(s => s.remove())
-    gradSegsRef.current = []
-    lastVisibleRef.current = -1
-    runnerRef.current?.remove(); runnerRef.current = null
+function seededRng(seed) {
+  let s = seed
+  return () => { s=(s*1664525+1013904223)&0xffffffff; return (s>>>0)/0xffffffff }
+}
+function getPaceZone(pace) {
+  if (!pace||pace<=0) return null
+  return PACE_ZONES.find(z => pace>=z.min && pace<z.max) || PACE_ZONES[0]
+}
+function calcStreak(runs) {
+  if (!runs.length) return 0
+  const sorted = [...new Set(runs.map(r=>r.date))].sort().reverse()
+  let streak = 0, prev = null
+  for (const d of sorted) {
+    const cur = new Date(d)
+    if (!prev) { streak=1; prev=cur; continue }
+    const diff = (prev-cur)/(1000*86400)
+    if (diff===1) { streak++; prev=cur }
+    else break
   }
+  return streak
+}
 
-  /* 그라데이션 세그먼트를 n개 표시 (증분 업데이트) */
-  const showSegsUpTo = (n) => {
-    const segs = gradSegsRef.current
-    const last = lastVisibleRef.current
-    if (n > last) {
-      for (let i = last + 1; i <= Math.min(n, segs.length - 1); i++)
-        segs[i].setStyle({ opacity: 1 })
-      lastVisibleRef.current = Math.min(n, segs.length - 1)
-    } else if (n < last) {
-      // 리셋/스크럽으로 뒤로 갈 때
-      for (let i = n + 1; i <= last; i++)
-        segs[i].setStyle({ opacity: 0 })
-      lastVisibleRef.current = n
-    }
+/* ─────────────────────────────────────────
+   MINI ROUTE SVG
+───────────────────────────────────────── */
+function MiniRoute({ date, w=80, h=50 }) {
+  const seed = date.split('-').reduce((a,b)=>a*31+parseInt(b),0)
+  const rng  = seededRng(seed)
+  const n = 14
+  const pts = Array.from({length:n},(_,i) => [
+    8 + (i/(n-1))*(w-16) + (rng()-0.5)*6,
+    h/2 + (rng()-0.5)*(h-14)
+  ])
+  let d = `M${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`
+  for (let i=1;i<n-1;i++) {
+    const mx=((pts[i][0]+pts[i+1][0])/2).toFixed(1)
+    const my=((pts[i][1]+pts[i+1][1])/2).toFixed(1)
+    d+=` Q${pts[i][0].toFixed(1)} ${pts[i][1].toFixed(1)} ${mx} ${my}`
   }
+  d+=` T${pts[n-1][0].toFixed(1)} ${pts[n-1][1].toFixed(1)}`
+  const id=`gr-${seed}`
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{flexShrink:0,display:'block'}}>
+      <defs>
+        <linearGradient id={id} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor={C.lime}/>
+          <stop offset="100%" stopColor={C.orange}/>
+        </linearGradient>
+      </defs>
+      <path d={d} fill="none" stroke={`url(#${id})`} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+      <circle cx={pts[0][0]} cy={pts[0][1]} r="3" fill={C.lime}/>
+      <circle cx={pts[n-1][0]} cy={pts[n-1][1]} r="3" fill={C.orange}/>
+    </svg>
+  )
+}
 
-  /* 경로 불러오기 */
-  const loadRoute = () => {
-    setParseErr('')
-    try {
-      const pts = parseGPS(gpsInput)
-      let dist = 0
-      for (let i = 1; i < pts.length; i++)
-        dist += haversine(pts[i-1].lat, pts[i-1].lng, pts[i].lat, pts[i].lng)
-      setRouteKm(parseFloat(dist.toFixed(2)))
-      setCoords(pts); coordsRef.current = pts
+/* ─────────────────────────────────────────
+   MONTH HEATMAP
+───────────────────────────────────────── */
+function MonthHeatmap({ runs, monthOffset=0 }) {
+  const ref  = new Date()
+  ref.setMonth(ref.getMonth() - monthOffset)
+  const year  = ref.getFullYear()
+  const month = ref.getMonth()
+  const label = ref.toLocaleDateString('ko-KR',{year:'numeric',month:'long'})
 
-      cancelAnimationFrame(rafId.current)
-      playingRef.current = false; progressRef.current = 0
-      setPlaying(false); setProgress(0)
-      clearLayers()
-
-      const map = mapObj.current
-      const lls = pts.map(p => [p.lat, p.lng])
-      const n   = pts.length
-
-      // ① 배경선 — 반투명 흰색 (애플 스타일 미답 경로)
-      bgLineRef.current = L.polyline(lls, {
-        color: '#ffffff', weight: 4, opacity: 0.12,
-        lineCap: 'round', lineJoin: 'round',
-      }).addTo(map)
-
-      // ② 그라데이션 세그먼트 — 전부 opacity 0으로 사전 생성
-      const segs = Math.min(GRAD_SEGS, n - 1)
-      for (let i = 0; i < segs; i++) {
-        const si = Math.floor(i * (n - 1) / segs)
-        const ei = Math.floor((i + 1) * (n - 1) / segs) + 1
-        const color = gradColor(i / (segs - 1))
-        const seg = L.polyline(
-          pts.slice(si, Math.min(ei, n)).map(p => [p.lat, p.lng]),
-          { color, weight: 6, opacity: 0, lineCap: 'round', lineJoin: 'round', smoothFactor: 0 }
-        ).addTo(map)
-        gradSegsRef.current.push(seg)
-      }
-
-      // ③ 출발점 — 초록 원
-      L.marker(lls[0], {
-        icon: L.divIcon({
-          html: `<div style="
-            width:18px;height:18px;border-radius:50%;
-            background:#30D158;
-            border:3px solid #fff;
-            box-shadow:0 0 10px 3px rgba(48,209,88,.55);
-          "></div>`,
-          className: '', iconSize: [18, 18], iconAnchor: [9, 9],
-        }),
-        zIndexOffset: 100,
-      }).addTo(map)
-
-      // ④ 도착점 — 빨간 원
-      L.marker(lls[n - 1], {
-        icon: L.divIcon({
-          html: `<div style="
-            width:18px;height:18px;border-radius:50%;
-            background:#FF453A;
-            border:3px solid #fff;
-            box-shadow:0 0 10px 3px rgba(255,69,58,.55);
-          "></div>`,
-          className: '', iconSize: [18, 18], iconAnchor: [9, 9],
-        }),
-        zIndexOffset: 100,
-      }).addTo(map)
-
-      // ⑤ 이동 포인트 — 흰색 pulse
-      runnerRef.current = L.marker(lls[0], {
-        icon: L.divIcon({
-          html: `<div class="rp-wrap">
-            <div class="rp-ring rp-r1"></div>
-            <div class="rp-ring rp-r2"></div>
-            <div class="rp-ring rp-r3"></div>
-            <div class="rp-core"></div>
-          </div>`,
-          className: '', iconSize: [40, 40], iconAnchor: [20, 20],
-        }),
-        zIndexOffset: 1000,
-      }).addTo(map)
-
-      map.fitBounds(L.latLngBounds(lls), { padding: [48, 48] })
-      setShowPanel(false)
-    } catch (e) { setParseErr(e.message) }
-  }
-
-  /* 재생 */
-  const play = () => {
-    if (playingRef.current) return
-    if (progressRef.current >= 1) { progressRef.current = 0; setProgress(0); showSegsUpTo(-1) }
-    playingRef.current = true; setPlaying(true)
-    const speed = ANIM_SPEEDS[speedIdx].value
-    let lastTs = null
-
-    const frame = (ts) => {
-      if (!playingRef.current) return
-      if (!lastTs) lastTs = ts
-      const dt = Math.min(ts - lastTs, 50); lastTs = ts
-
-      const total = coordsRef.current.length
-      progressRef.current = Math.min(
-        progressRef.current + (speed * dt) / (ANIM_SECS_1X * 1000), 1
-      )
-      const rawIdx = progressRef.current * (total - 1)
-      const fi = Math.floor(rawIdx), frac = rawIdx - fi
-
-      // 이동 포인트
-      if (fi < total - 1) {
-        const a = coordsRef.current[fi], b = coordsRef.current[fi + 1]
-        runnerRef.current?.setLatLng([
-          a.lat + (b.lat - a.lat) * frac,
-          a.lng + (b.lng - a.lng) * frac,
-        ])
-      }
-
-      // 그라데이션 세그먼트 증분 표시
-      const segIdx = Math.floor(progressRef.current * (gradSegsRef.current.length - 1))
-      showSegsUpTo(segIdx)
-
-      setProgress(progressRef.current)
-      if (progressRef.current < 1) rafId.current = requestAnimationFrame(frame)
-      else { playingRef.current = false; setPlaying(false) }
-    }
-    rafId.current = requestAnimationFrame(frame)
-  }
-
-  const pause = () => {
-    playingRef.current = false; setPlaying(false)
-    cancelAnimationFrame(rafId.current)
-  }
-
-  const reset = () => {
-    pause(); progressRef.current = 0; setProgress(0)
-    showSegsUpTo(-1)
-    const c = coordsRef.current
-    if (c.length) runnerRef.current?.setLatLng([c[0].lat, c[0].lng])
-  }
-
-  /* 스크럽 */
-  const scrub = (e) => {
-    const rect = e.currentTarget.getBoundingClientRect()
-    const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-    progressRef.current = pct; setProgress(pct)
-    const total = coordsRef.current.length
-    if (!total) return
-    const fi     = Math.min(Math.floor(pct * (total - 1)), total - 2)
-    const segIdx = Math.floor(pct * (gradSegsRef.current.length - 1))
-    showSegsUpTo(segIdx)
-    runnerRef.current?.setLatLng([coordsRef.current[fi].lat, coordsRef.current[fi].lng])
-  }
-
-  const pctDone = Math.round(progress * 100)
-  const kmDone  = parseFloat((progress * routeKm).toFixed(2))
+  const byDate = {}
+  runs.forEach(r => { const d=new Date(r.date); if(d.getFullYear()===year&&d.getMonth()===month) byDate[r.date]=(byDate[r.date]||0)+r.distance })
+  const maxKm = Math.max(...Object.values(byDate), 1)
+  const firstDow = new Date(year,month,1).getDay()
+  const daysInMonth = new Date(year,month+1,0).getDate()
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: 'calc(100dvh - 136px)' }}>
-      {/* 지도 */}
-      <div style={{ flex: 1, position: 'relative', borderRadius: 16, overflow: 'hidden', minHeight: 220 }}>
-        <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
-
-        {/* 진행 오버레이 */}
-        {coords.length > 0 && (
-          <div style={{ position: 'absolute', top: 12, left: 12, background: 'rgba(0,0,0,0.6)', borderRadius: 12, padding: '8px 14px', fontSize: 13, backdropFilter: 'blur(8px)', zIndex: 1000, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ color: gradColor(progress), fontWeight: 700, fontSize: 15 }}>{kmDone}</span>
-            <span style={{ color: 'rgba(255,255,255,0.45)', fontSize: 12 }}>/ {routeKm} km</span>
-          </div>
-        )}
-
-        {/* 경로 입력 토글 */}
-        <button onClick={() => setShowPanel(v => !v)}
-          style={{ position: 'absolute', top: 12, right: 12, background: 'rgba(0,0,0,0.6)', border: 'none', borderRadius: 12, padding: '8px 14px', color: '#fff', fontSize: 13, cursor: 'pointer', backdropFilter: 'blur(8px)', zIndex: 1000, WebkitTapHighlightColor: 'transparent' }}>
-          {showPanel ? '✕' : '📍 경로 입력'}
-        </button>
+    <div>
+      <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.1em',color:C.muted,textTransform:'uppercase',marginBottom:10}}>{label}</div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:3}}>
+        {['S','M','T','W','T','F','S'].map((d,i)=>(
+          <div key={i} style={{textAlign:'center',fontSize:9,fontWeight:700,color:C.dim,paddingBottom:4,textTransform:'uppercase'}}>{d}</div>
+        ))}
+        {Array.from({length:firstDow}).map((_,i)=><div key={`e${i}`}/>)}
+        {Array.from({length:daysInMonth}).map((_,i)=>{
+          const day  = i+1
+          const dStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+          const km   = byDate[dStr]||0
+          const intensity = km/maxKm
+          const isToday = dStr===new Date().toISOString().slice(0,10)
+          return (
+            <div key={day} style={{
+              aspectRatio:'1',borderRadius:6,
+              background: km>0 ? `rgba(200,245,73,${0.2+intensity*0.8})` : C.card2,
+              border: isToday ? `1px solid ${C.lime}` : 'none',
+              display:'flex',alignItems:'center',justifyContent:'center',
+              fontSize:9,color:km>0?'#000':C.dim,fontWeight:km>0?800:400,
+            }}>{day}</div>
+          )
+        })}
       </div>
+    </div>
+  )
+}
 
-      {/* GPS 입력 패널 */}
-      {showPanel && (
-        <div style={{ background: '#1f2028', borderRadius: 14, padding: 14 }}>
-          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>
-            GPS 좌표 — <code style={{ color: '#6b7280', fontSize: 11 }}>[[lat,lng], ...]</code> 또는 <code style={{ color: '#6b7280', fontSize: 11 }}>[{'{'}lat,lng{'}'},...]</code>
+/* ─────────────────────────────────────────
+   CELEBRATION OVERLAY
+───────────────────────────────────────── */
+const CONFETTI_COLORS = [C.lime, C.orange, '#fff', '#FFD60A', '#FF6B9D']
+function Celebration({ run, onDone }) {
+  const pieces = useRef(Array.from({length:28},(_,i)=>({
+    id:i, color:CONFETTI_COLORS[i%CONFETTI_COLORS.length],
+    left:`${5+Math.random()*90}%`, delay:`${Math.random()*0.8}s`,
+    dur:`${1.2+Math.random()*1.2}s`, size:6+Math.random()*8,
+    rot:Math.random()*360,
+  }))).current
+
+  return (
+    <div style={{ position:'fixed',inset:0,zIndex:500,background:'rgba(0,0,0,0.95)', display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',overflow:'hidden' }}>
+      {pieces.map(p=>(
+        <div key={p.id} className="conf-piece" style={{
+          '--left':p.left,'--delay':p.delay,'--dur':p.dur,'--rot':`${p.rot}deg`,
+          position:'absolute',top:'-10px',left:p.left,
+          width:p.size,height:p.size,background:p.color,borderRadius:p.size>10?'50%':'2px',
+          animation:`confFall ${p.dur} ${p.delay} ease-in forwards`,
+        }}/>
+      ))}
+      <div className="celeb-in" style={{textAlign:'center',padding:'0 24px'}}>
+        <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.3em',color:C.lime,marginBottom:12,textTransform:'uppercase'}}>
+          Great Run! 🎉
+        </div>
+        <div style={{fontSize:88,fontWeight:900,letterSpacing:'-5px',lineHeight:1,color:C.white}}>
+          {run.distance}
+          <span style={{fontSize:32,letterSpacing:'-1px',color:C.muted}}> KM</span>
+        </div>
+        <div style={{display:'flex',justifyContent:'center',gap:24,marginTop:20}}>
+          {[
+            {label:'PACE', val:paceToStr(run.pace)},
+            {label:'HR',   val:run.hr>0?`${run.hr}bpm`:'—'},
+            {label:'CAL',  val:run.calories>0?`${run.calories}`:'—'},
+          ].map(s=>(
+            <div key={s.label}>
+              <div style={{fontSize:10,fontWeight:700,letterSpacing:'0.15em',color:C.muted}}>{s.label}</div>
+              <div style={{fontSize:22,fontWeight:800,color:C.white}}>{s.val}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <button onClick={onDone} style={{
+        marginTop:48,background:C.lime,color:'#000',border:'none',
+        borderRadius:50,padding:'16px 56px',fontSize:15,fontWeight:900,
+        letterSpacing:'0.06em',textTransform:'uppercase',cursor:'pointer',
+        WebkitTapHighlightColor:'transparent',
+      }}>DONE</button>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────
+   INPUT STYLE
+───────────────────────────────────────── */
+const inp = {
+  width:'100%',boxSizing:'border-box',background:C.card2,border:`1px solid ${C.border}`,
+  borderRadius:12,padding:'13px 16px',color:C.white,fontSize:16,outline:'none',WebkitAppearance:'none',
+}
+
+/* ─────────────────────────────────────────
+   HOME TAB
+───────────────────────────────────────── */
+function HomeTab({ runs, onAdd }) {
+  const now     = new Date()
+  const weekAgo = new Date(now-7*86400000).toISOString().slice(0,10)
+  const monthStart = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`
+  const weekRuns  = runs.filter(r=>r.date>=weekAgo)
+  const monthRuns = runs.filter(r=>r.date>=monthStart)
+  const weekKm    = weekRuns.reduce((s,r)=>s+r.distance,0)
+  const monthKm   = monthRuns.reduce((s,r)=>s+r.distance,0)
+  const recentRuns= [...runs].reverse().slice(0,3)
+  const streak    = calcStreak(runs)
+  const GOAL_KM   = 40
+
+  const dayOfWeek = ['SUN','MON','TUE','WED','THU','FRI','SAT'][now.getDay()]
+  const dateStr   = now.toLocaleDateString('ko-KR',{month:'long',day:'numeric'})
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:0}}>
+      {/* ── 히어로 섹션 ── */}
+      <div style={{padding:'8px 20px 0'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+          <div>
+            <span style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.lime,textTransform:'uppercase'}}>{dayOfWeek} · {dateStr}</span>
           </div>
-          <textarea value={gpsInput} onChange={e => { setGpsInput(e.target.value); setParseErr('') }}
-            rows={3} placeholder="[[37.5195, 126.9393], ...]"
-            style={{ ...inputStyle, resize: 'vertical', fontSize: 12, fontFamily: 'monospace' }} />
-          {parseErr && <div style={{ color: '#fca5a5', fontSize: 12, marginTop: 5 }}>{parseErr}</div>}
-          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-            <TouchBtn onClick={() => { setGpsInput(SAMPLE_GPS); setParseErr('') }} color="#2e303a" style={{ flex: 1, fontSize: 13, padding: '10px' }}>샘플</TouchBtn>
-            <TouchBtn onClick={loadRoute} disabled={!gpsInput.trim()} style={{ flex: 2, fontSize: 13, padding: '10px' }}>경로 불러오기</TouchBtn>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            {streak>0&&<div style={{background:C.card2,borderRadius:20,padding:'4px 10px',display:'flex',alignItems:'center',gap:5}}>
+              <span style={{fontSize:13}}>🔥</span>
+              <span style={{fontSize:12,fontWeight:800,color:C.orange}}>{streak}일 연속</span>
+            </div>}
           </div>
         </div>
-      )}
 
-      {/* 재생 컨트롤 */}
-      {coords.length > 0 && (
-        <div style={{ background: '#1f2028', borderRadius: 14, padding: '12px 14px' }}>
-          {/* 진행 바 — 그린→옐로 그라데이션 */}
-          <div onClick={scrub} style={{ background: '#2e303a', borderRadius: 4, height: 6, marginBottom: 12, cursor: 'pointer', overflow: 'hidden' }}>
-            <div style={{ background: 'linear-gradient(90deg,#30D158,#FFD60A)', height: '100%', width: `${pctDone}%`, borderRadius: 4, transition: 'width .05s linear' }} />
+        {/* 주간 거리 — 대형 타이포 */}
+        <div style={{marginTop:12,marginBottom:4}}>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:2}}>THIS WEEK</div>
+          <div style={{display:'flex',alignItems:'flex-end',gap:6,lineHeight:1}}>
+            <span style={{fontSize:96,fontWeight:900,letterSpacing:'-6px',color:C.white,lineHeight:0.92}}>
+              {weekKm.toFixed(1)}
+            </span>
+            <span style={{fontSize:28,fontWeight:900,color:C.muted,marginBottom:8,letterSpacing:'-1px'}}>KM</span>
           </div>
+        </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button onClick={reset}
-              style={{ background: '#2e303a', border: 'none', borderRadius: 10, width: 44, height: 44, color: '#9ca3af', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, WebkitTapHighlightColor: 'transparent' }}>
-              ⏮
-            </button>
-            <button onClick={playing ? pause : play}
-              style={{ flex: 1, background: playing ? '#1c7a38' : '#30D158', border: 'none', borderRadius: 12, height: 44, color: '#fff', cursor: 'pointer', fontSize: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', WebkitTapHighlightColor: 'transparent' }}>
-              {playing ? '⏸' : progress >= 1 ? '↺' : '▶'}
-            </button>
-            <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-              {ANIM_SPEEDS.map((s, i) => (
-                <button key={i} onClick={() => setSpeedIdx(i)}
-                  style={{ background: speedIdx === i ? '#30D158' : '#2e303a', border: 'none', borderRadius: 8, width: 36, height: 36, color: speedIdx === i ? '#000' : '#9ca3af', cursor: 'pointer', fontSize: 12, fontWeight: 700, WebkitTapHighlightColor: 'transparent' }}>
-                  {s.label}
-                </button>
+        {/* 목표 진행 바 */}
+        <div style={{marginBottom:16}}>
+          <div style={{display:'flex',justifyContent:'space-between',marginBottom:6}}>
+            <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:'0.1em',textTransform:'uppercase'}}>Weekly Goal</span>
+            <span style={{fontSize:11,fontWeight:700,color:C.lime}}>{Math.min(100,Math.round(weekKm/GOAL_KM*100))}% · {GOAL_KM}KM</span>
+          </div>
+          <div style={{height:4,background:C.card2,borderRadius:2,overflow:'hidden'}}>
+            <div style={{height:'100%',width:`${Math.min(100,weekKm/GOAL_KM*100)}%`,background:`linear-gradient(90deg,${C.lime},${C.orange})`,borderRadius:2,transition:'width 1s ease'}}/>
+          </div>
+        </div>
+
+        {/* 빠른 스탯 행 */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:20}}>
+          {[
+            {label:'RUNS',   val:weekRuns.length,  unit:''},
+            {label:'MONTH',  val:monthKm.toFixed(1), unit:'km'},
+            {label:'TOTAL',  val:runs.length,        unit:'runs'},
+          ].map(s=>(
+            <div key={s.label} style={{background:C.card,borderRadius:14,padding:'12px 14px'}}>
+              <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:3}}>{s.label}</div>
+              <div style={{fontSize:22,fontWeight:900,color:C.white,letterSpacing:'-1px',lineHeight:1}}>{s.val}<span style={{fontSize:12,color:C.muted,fontWeight:600}}>{s.unit&&' '+s.unit}</span></div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── 빠른 기록 버튼 ── */}
+      <div style={{padding:'0 20px',marginBottom:24}}>
+        <button onClick={onAdd} style={{
+          width:'100%',background:C.lime,border:'none',borderRadius:16,
+          padding:'18px',color:'#000',fontSize:16,fontWeight:900,
+          letterSpacing:'0.08em',textTransform:'uppercase',cursor:'pointer',
+          WebkitTapHighlightColor:'transparent',
+          boxShadow:`0 0 32px rgba(200,245,73,0.25)`,
+        }}>+ LOG A RUN</button>
+      </div>
+
+      {/* ── 최근 러닝 ── */}
+      <div style={{padding:'0 20px'}}>
+        <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:12}}>RECENT RUNS</div>
+        {recentRuns.length===0 && (
+          <div style={{textAlign:'center',padding:'32px 0',color:C.dim,fontSize:14}}>
+            아직 러닝 기록이 없습니다<br/>
+            <span style={{color:C.lime,fontSize:12}}>첫 기록을 추가해보세요 →</span>
+          </div>
+        )}
+        {recentRuns.map((r,i)=><RecentRunCard key={i} run={r}/>)}
+      </div>
+    </div>
+  )
+}
+
+function RecentRunCard({ run }) {
+  const zone = getPaceZone(run.pace)
+  const dateLabel = new Date(run.date).toLocaleDateString('ko-KR',{month:'short',day:'numeric',weekday:'short'})
+  return (
+    <div style={{background:C.card,borderRadius:16,padding:'16px',marginBottom:10,display:'flex',alignItems:'center',gap:14}}>
+      <MiniRoute date={run.date} w={72} h={48}/>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:2}}>{dateLabel}</div>
+        <div style={{fontSize:28,fontWeight:900,letterSpacing:'-1.5px',color:C.white,lineHeight:1}}>{run.distance}<span style={{fontSize:13,fontWeight:600,color:C.muted}}> KM</span></div>
+      </div>
+      <div style={{textAlign:'right',flexShrink:0}}>
+        <div style={{fontSize:15,fontWeight:800,color:zone?.color||C.muted}}>{paceToStr(run.pace)}</div>
+        <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:'0.1em',textTransform:'uppercase'}}>/KM</div>
+        {run.hr>0&&<div style={{fontSize:11,color:C.muted,marginTop:2}}>❤ {run.hr}</div>}
+      </div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────
+   RECORDS TAB (TIMELINE)
+───────────────────────────────────────── */
+function RecordsTab({ runs, onAdd, onDelete }) {
+  const [selectedIdx, setSelectedIdx] = useState(null)
+  const sorted = [...runs].reverse()
+
+  // 월별 그룹
+  const groups = {}
+  sorted.forEach((r,i) => {
+    const key = r.date.slice(0,7)
+    if (!groups[key]) groups[key]=[]
+    groups[key].push({...r,_origIdx: runs.length-1-i})
+  })
+
+  if (sorted.length===0) return (
+    <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'80px 20px',gap:16}}>
+      <div style={{fontSize:64}}>🏃</div>
+      <div style={{fontSize:28,fontWeight:900,color:C.white,letterSpacing:'-1px'}}>NO RUNS YET</div>
+      <div style={{fontSize:14,color:C.muted,textAlign:'center'}}>첫 러닝을 기록하고<br/>타임라인을 채워보세요</div>
+      <button onClick={onAdd} style={{marginTop:8,background:C.lime,color:'#000',border:'none',borderRadius:50,padding:'14px 36px',fontSize:14,fontWeight:900,letterSpacing:'0.08em',textTransform:'uppercase',cursor:'pointer'}}>ADD FIRST RUN</button>
+    </div>
+  )
+
+  return (
+    <div style={{padding:'0 20px'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',paddingTop:4,marginBottom:20}}>
+        <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase'}}>{runs.length} TOTAL RUNS</div>
+        <button onClick={onAdd} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:20,padding:'7px 14px',color:C.lime,fontSize:12,fontWeight:800,letterSpacing:'0.06em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>+ ADD</button>
+      </div>
+      {Object.entries(groups).map(([month,monthRuns])=>(
+        <div key={month} style={{marginBottom:24}}>
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.lime,textTransform:'uppercase',marginBottom:12}}>
+            {new Date(month+'-01').toLocaleDateString('ko-KR',{year:'numeric',month:'long'})}
+            <span style={{color:C.dim,marginLeft:8}}>{monthRuns.reduce((s,r)=>s+r.distance,0).toFixed(1)} KM</span>
+          </div>
+          {monthRuns.map((r,i)=>{
+            const zone = getPaceZone(r.pace)
+            const sel  = selectedIdx===r._origIdx
+            const dateLabel = new Date(r.date).toLocaleDateString('ko-KR',{month:'numeric',day:'numeric',weekday:'short'})
+            return (
+              <div key={i} onClick={()=>setSelectedIdx(sel?null:r._origIdx)}
+                style={{display:'flex',alignItems:'stretch',marginBottom:8,gap:0}}>
+                {/* 타임라인 선 */}
+                <div style={{display:'flex',flexDirection:'column',alignItems:'center',paddingRight:12,paddingTop:4}}>
+                  <div style={{width:10,height:10,borderRadius:'50%',background:zone?.color||C.lime,flexShrink:0,boxShadow:`0 0 8px ${zone?.color||C.lime}66`}}/>
+                  <div style={{width:1,flex:1,background:C.border,marginTop:4}}/>
+                </div>
+                {/* 카드 */}
+                <div style={{flex:1,background:sel?'#1A1A0A':C.card,borderRadius:16,padding:'14px 16px',border:`1px solid ${sel?C.lime:C.border}`,transition:'all .15s',cursor:'pointer'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                    <div>
+                      <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:'0.12em',textTransform:'uppercase'}}>{dateLabel}</div>
+                      <div style={{fontSize:32,fontWeight:900,letterSpacing:'-2px',color:C.white,lineHeight:1.1}}>{r.distance}<span style={{fontSize:13,color:C.muted,fontWeight:600}}> km</span></div>
+                    </div>
+                    <MiniRoute date={r.date} w={72} h={44}/>
+                  </div>
+                  <div style={{display:'flex',gap:14,marginTop:10,flexWrap:'wrap'}}>
+                    <Chip color={zone?.color||C.muted} label="PACE" val={paceToStr(r.pace)}/>
+                    {r.hr>0&&<Chip color={C.red} label="HR" val={`${r.hr}bpm`}/>}
+                    {r.calories>0&&<Chip color={C.orange} label="CAL" val={`${r.calories}`}/>}
+                    {zone&&<div style={{background:`${zone.color}22`,borderRadius:20,padding:'3px 10px'}}>
+                      <span style={{fontSize:10,fontWeight:800,color:zone.color,letterSpacing:'0.1em'}}>{zone.en}</span>
+                    </div>}
+                  </div>
+                  {r.note&&<div style={{color:C.muted,fontSize:12,marginTop:8,fontStyle:'italic'}}>"{r.note}"</div>}
+                  {sel&&<button onClick={e=>{e.stopPropagation();onDelete(r._origIdx);setSelectedIdx(null)}}
+                    style={{marginTop:12,width:'100%',background:C.red+'22',border:`1px solid ${C.red}44`,borderRadius:10,padding:'10px',color:C.red,fontSize:12,fontWeight:800,letterSpacing:'0.06em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
+                    DELETE RUN
+                  </button>}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function Chip({ color, label, val }) {
+  return (
+    <div>
+      <div style={{fontSize:9,fontWeight:700,letterSpacing:'0.12em',color:C.muted,textTransform:'uppercase'}}>{label}</div>
+      <div style={{fontSize:14,fontWeight:800,color}}>{val}</div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────
+   STATS TAB
+───────────────────────────────────────── */
+function StatsTab({ runs }) {
+  const now = new Date()
+  const weekAgo= new Date(now-7*86400000).toISOString().slice(0,10)
+  const weekRuns = runs.filter(r=>r.date>=weekAgo)
+  const paceRuns = runs.filter(r=>r.pace>0)
+  const avgPace  = paceRuns.length ? paceRuns.reduce((s,r)=>s+r.pace,0)/paceRuns.length : 0
+  const totalKm  = runs.reduce((s,r)=>s+r.distance,0)
+  const totalCal = runs.reduce((s,r)=>s+r.calories,0)
+
+  // 페이스 구간 분석
+  const zoneCounts = PACE_ZONES.map(z=>({
+    ...z,
+    count: paceRuns.filter(r=>r.pace>=z.min&&r.pace<z.max).length
+  }))
+  const maxZoneCount = Math.max(...zoneCounts.map(z=>z.count),1)
+
+  // 최근 8주 주간 볼륨
+  const weeklyData = Array.from({length:8},(_,i)=>{
+    const end = new Date(now); end.setDate(end.getDate()-i*7)
+    const start= new Date(end); start.setDate(start.getDate()-6)
+    const es=end.toISOString().slice(0,10), ss=start.toISOString().slice(0,10)
+    const km=runs.filter(r=>r.date>=ss&&r.date<=es).reduce((s,r)=>s+r.distance,0)
+    return { week:`-${i}W`, km:parseFloat(km.toFixed(1)) }
+  }).reverse()
+
+  // PR 계산
+  const maxSingle = runs.reduce((max,r)=>r.distance>max?r.distance:max,0)
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:20,padding:'0 20px'}}>
+      {/* 전체 요약 */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+        <BigStatCard label="TOTAL DISTANCE" val={`${totalKm.toFixed(0)}`} unit="KM" color={C.lime}/>
+        <BigStatCard label="TOTAL RUNS" val={`${runs.length}`} unit="RUNS" color={C.orange}/>
+        <BigStatCard label="AVG PACE" val={paceToStr(avgPace)} unit="/KM" color="#30D158"/>
+        <BigStatCard label="LONGEST RUN" val={`${maxSingle.toFixed(1)}`} unit="KM" color={C.blue}/>
+      </div>
+
+      {/* 주간 볼륨 차트 */}
+      <div style={{background:C.card,borderRadius:16,padding:'16px 14px'}}>
+        <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:14}}>WEEKLY VOLUME</div>
+        <ResponsiveContainer width="100%" height={120}>
+          <BarChart data={weeklyData} margin={{left:-28,right:0,top:4,bottom:0}}>
+            <XAxis dataKey="week" tick={{fill:C.muted,fontSize:9,fontWeight:700}} axisLine={false} tickLine={false}/>
+            <YAxis tick={{fill:C.muted,fontSize:9}} axisLine={false} tickLine={false}/>
+            <Tooltip contentStyle={{background:C.card2,border:`1px solid ${C.border}`,borderRadius:10,fontSize:12}} labelStyle={{color:C.white}} formatter={v=>[`${v} km`]}/>
+            <Bar dataKey="km" radius={[6,6,0,0]}>
+              {weeklyData.map((d,i)=><Cell key={i} fill={i===weeklyData.length-1?C.lime:C.dim}/>)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* 페이스 구간 */}
+      <div style={{background:C.card,borderRadius:16,padding:'16px'}}>
+        <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:16}}>PACE ZONES</div>
+        {zoneCounts.map((z,i)=>(
+          <div key={i} style={{marginBottom:12}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:5}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <div style={{width:8,height:8,borderRadius:'50%',background:z.color}}/>
+                <span style={{fontSize:11,fontWeight:800,color:C.white,letterSpacing:'0.06em'}}>{z.en}</span>
+                <span style={{fontSize:10,color:C.muted}}>{z.min===0?`<${z.max}`:`${z.min}${z.max<99?`–${z.max}`:'+'}` }'</span>
+              </div>
+              <span style={{fontSize:12,fontWeight:800,color:z.count>0?z.color:C.dim}}>{z.count}<span style={{fontSize:10,color:C.muted,fontWeight:500}}> runs</span></span>
+            </div>
+            <div style={{height:5,background:C.card2,borderRadius:3,overflow:'hidden'}}>
+              <div style={{height:'100%',width:`${(z.count/maxZoneCount)*100}%`,background:z.color,borderRadius:3,transition:'width 1s ease',opacity:z.count?1:0.3}}/>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* 월간 히트맵 */}
+      <div style={{background:C.card,borderRadius:16,padding:'16px'}}>
+        <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:14}}>ACTIVITY HEATMAP</div>
+        <MonthHeatmap runs={runs} monthOffset={0}/>
+        <div style={{height:1,background:C.border,margin:'16px 0'}}/>
+        <MonthHeatmap runs={runs} monthOffset={1}/>
+      </div>
+    </div>
+  )
+}
+
+function BigStatCard({ label, val, unit, color }) {
+  return (
+    <div style={{background:C.card,borderRadius:16,padding:'16px 14px'}}>
+      <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:4}}>{label}</div>
+      <div style={{fontSize:30,fontWeight:900,letterSpacing:'-1.5px',color,lineHeight:1}}>{val}</div>
+      <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:'0.08em',marginTop:2}}>{unit}</div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────
+   AI TAB
+───────────────────────────────────────── */
+function AITab({ runs }) {
+  const [input,      setInput]      = useState('')
+  const [messages,   setMessages]   = useState([])
+  const [loading,    setLoading]    = useState(false)
+  const [claudeKey,  setClaudeKey]  = useState(()=>localStorage.getItem('claudeKey')||'')
+  const endRef = useRef(null)
+
+  useEffect(()=>{ endRef.current?.scrollIntoView({behavior:'smooth'}) },[messages,loading])
+
+  const now=new Date(), weekAgo=new Date(now-7*86400000).toISOString().slice(0,10)
+  const weekRuns=runs.filter(r=>r.date>=weekAgo)
+  const weekKm=weekRuns.reduce((s,r)=>s+r.distance,0).toFixed(1)
+  const paceRuns=runs.filter(r=>r.pace>0)
+  const avgPace=paceRuns.length?paceRuns.reduce((s,r)=>s+r.pace,0)/paceRuns.length:0
+
+  const saveKey=k=>{ setClaudeKey(k); localStorage.setItem('claudeKey',k) }
+
+  const ask=async()=>{
+    if(!input.trim()||!claudeKey) return
+    const msg=input.trim()
+    const next=[...messages,{role:'user',content:msg}]
+    setMessages(next); setInput(''); setLoading(true)
+    const ctx=`이번주 ${weekKm}km(${weekRuns.length}회), 총 ${runs.length}회, 평균 페이스 ${paceToStr(avgPace)}/km`
+    try {
+      const res=await fetch(CLAUDE_API,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','x-api-key':claudeKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+        body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1024,system:`전문 러닝 코치. 사용자 데이터: ${ctx}. 한국어로 간결하고 실용적인 조언.`,messages:next})
+      })
+      const d=await res.json()
+      setMessages(m=>[...m,{role:'assistant',content:d.content?.[0]?.text||'응답 없음'}])
+    } catch { setMessages(m=>[...m,{role:'assistant',content:'오류. API 키를 확인해주세요.'}]) }
+    finally { setLoading(false) }
+  }
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',height:'calc(100dvh - 136px)',padding:'0 20px'}}>
+      {!claudeKey&&(
+        <div style={{background:C.card,borderRadius:16,padding:16,marginBottom:12}}>
+          <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:8}}>CLAUDE API KEY</div>
+          <input type="password" placeholder="sk-ant-..." onChange={e=>saveKey(e.target.value)} style={inp}/>
+        </div>
+      )}
+      <div style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',gap:10}}>
+        {messages.length===0&&(
+          <div style={{textAlign:'center',padding:'32px 0',color:C.muted}}>
+            <div style={{fontSize:40,marginBottom:12}}>✦</div>
+            <div style={{fontSize:20,fontWeight:900,color:C.white,letterSpacing:'-0.5px',marginBottom:6}}>AI COACH</div>
+            <div style={{fontSize:13,marginBottom:20}}>러닝 데이터 기반 맞춤 조언</div>
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {['이번주 훈련 평가해줘','페이스 향상 방법 알려줘','다음 훈련 계획 세워줘'].map(q=>(
+                <button key={q} onClick={()=>setInput(q)} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:50,padding:'11px 18px',color:C.lime,fontSize:13,fontWeight:700,cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>{q}</button>
               ))}
             </div>
           </div>
-
-          <div style={{ display: 'flex', gap: 16, marginTop: 10, paddingTop: 10, borderTop: '1px solid #2e303a' }}>
-            <div style={{ flex: 1, textAlign: 'center' }}>
-              <div style={{ color: '#6b7280', fontSize: 11 }}>전체 거리</div>
-              <div style={{ color: '#30D158', fontWeight: 700, fontSize: 15 }}>{routeKm} km</div>
-            </div>
-            <div style={{ flex: 1, textAlign: 'center' }}>
-              <div style={{ color: '#6b7280', fontSize: 11 }}>좌표 수</div>
-              <div style={{ color: '#60a5fa', fontWeight: 700, fontSize: 15 }}>{coords.length}</div>
-            </div>
-            <div style={{ flex: 1, textAlign: 'center' }}>
-              <div style={{ color: '#6b7280', fontSize: 11 }}>진행 거리</div>
-              <div style={{ color: '#FFD60A', fontWeight: 700, fontSize: 15 }}>{kmDone} km</div>
-            </div>
-          </div>
-        </div>
-      )}
+        )}
+        {messages.map((m,i)=>(
+          <div key={i} style={{
+            alignSelf:m.role==='user'?'flex-end':'flex-start',
+            maxWidth:'86%',
+            background:m.role==='user'?C.lime:'#1A1A1A',
+            borderRadius:m.role==='user'?'18px 18px 4px 18px':'18px 18px 18px 4px',
+            padding:'12px 16px',
+            fontSize:14,lineHeight:1.65,whiteSpace:'pre-wrap',
+            color:m.role==='user'?'#000':C.white,fontWeight:m.role==='user'?700:400,
+          }}>{m.content}</div>
+        ))}
+        {loading&&<div style={{alignSelf:'flex-start',background:'#1A1A1A',borderRadius:'18px 18px 18px 4px',padding:'12px 16px',color:C.muted,fontSize:14}}>생각 중...</div>}
+        <div ref={endRef}/>
+      </div>
+      <div style={{display:'flex',gap:8,paddingTop:10,paddingBottom:4}}>
+        <input value={input} onChange={e=>setInput(e.target.value)}
+          onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask()}}}
+          placeholder={claudeKey?'질문 입력...':'설정에서 API 키를 입력하세요'}
+          style={{...inp,flex:1,fontSize:15}} disabled={!claudeKey}/>
+        <button onClick={ask} disabled={!claudeKey||!input.trim()||loading}
+          style={{background:C.lime,border:'none',borderRadius:12,width:48,height:48,color:'#000',fontSize:20,fontWeight:900,cursor:'pointer',opacity:(!claudeKey||!input.trim()||loading)?0.4:1,flexShrink:0,WebkitTapHighlightColor:'transparent'}}>↑</button>
+      </div>
     </div>
   )
 }
 
-/* ════════════════ 메인 앱 ════════════════ */
+/* ─────────────────────────────────────────
+   MAP TAB (Apple Health style)
+───────────────────────────────────────── */
+function MapTab({ active }) {
+  const mapRef=useRef(null),mapObj=useRef(null),bgLineRef=useRef(null)
+  const gradSegsRef=useRef([]),lastVisibleRef=useRef(-1)
+  const runnerRef=useRef(null),rafId=useRef(null)
+  const progressRef=useRef(0),playingRef=useRef(false),coordsRef=useRef([])
+
+  const [activated,setActivated]=useState(false)
+  const [gpsInput,setGpsInput]=useState('')
+  const [coords,setCoords]=useState([])
+  const [routeKm,setRouteKm]=useState(0)
+  const [playing,setPlaying]=useState(false)
+  const [progress,setProgress]=useState(0)
+  const [speedIdx,setSpeedIdx]=useState(1)
+  const [showPanel,setShowPanel]=useState(true)
+  const [parseErr,setParseErr]=useState('')
+
+  useEffect(()=>{ if(active&&!activated) setActivated(true) },[active,activated])
+  useEffect(()=>{
+    if(!activated||!mapRef.current||mapObj.current) return
+    const map=L.map(mapRef.current,{center:[37.5665,126.9780],zoom:13,zoomControl:true})
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+      attribution:'© <a href="https://openstreetmap.org" style="color:#555">OSM</a> © <a href="https://carto.com" style="color:#555">CARTO</a>',maxZoom:19
+    }).addTo(map)
+    mapObj.current=map
+  },[activated])
+  useEffect(()=>{ if(active&&mapObj.current) setTimeout(()=>mapObj.current.invalidateSize(),50) },[active])
+  useEffect(()=>{ coordsRef.current=coords },[coords])
+
+  const clearLayers=()=>{
+    bgLineRef.current?.remove(); bgLineRef.current=null
+    gradSegsRef.current.forEach(s=>s.remove()); gradSegsRef.current=[]; lastVisibleRef.current=-1
+    runnerRef.current?.remove(); runnerRef.current=null
+  }
+  const showSegsUpTo=(n)=>{
+    const segs=gradSegsRef.current,last=lastVisibleRef.current
+    if(n>last){ for(let i=last+1;i<=Math.min(n,segs.length-1);i++) segs[i].setStyle({opacity:1}); lastVisibleRef.current=Math.min(n,segs.length-1) }
+    else if(n<last){ for(let i=n+1;i<=last;i++) segs[i].setStyle({opacity:0}); lastVisibleRef.current=n }
+  }
+  const loadRoute=()=>{
+    setParseErr('')
+    try {
+      const pts=parseGPS(gpsInput)
+      let dist=0; for(let i=1;i<pts.length;i++) dist+=haversine(pts[i-1].lat,pts[i-1].lng,pts[i].lat,pts[i].lng)
+      setRouteKm(parseFloat(dist.toFixed(2))); setCoords(pts); coordsRef.current=pts
+      cancelAnimationFrame(rafId.current); playingRef.current=false; progressRef.current=0
+      setPlaying(false); setProgress(0); clearLayers()
+      const map=mapObj.current,lls=pts.map(p=>[p.lat,p.lng]),n=pts.length
+      bgLineRef.current=L.polyline(lls,{color:'#ffffff',weight:4,opacity:0.12,lineCap:'round',lineJoin:'round'}).addTo(map)
+      const segs=Math.min(GRAD_SEGS,n-1)
+      for(let i=0;i<segs;i++){
+        const si=Math.floor(i*(n-1)/segs),ei=Math.floor((i+1)*(n-1)/segs)+1
+        const seg=L.polyline(pts.slice(si,Math.min(ei,n)).map(p=>[p.lat,p.lng]),{color:gradColor(i/(segs-1)),weight:6,opacity:0,lineCap:'round',lineJoin:'round',smoothFactor:0}).addTo(map)
+        gradSegsRef.current.push(seg)
+      }
+      const ci=(c,gl)=>L.divIcon({html:`<div style="width:18px;height:18px;border-radius:50%;background:${c};border:3px solid #fff;box-shadow:0 0 10px 3px ${c}88;"></div>`,className:'',iconSize:[18,18],iconAnchor:[9,9]})
+      L.marker(lls[0],{icon:ci('#30D158'),zIndexOffset:100}).addTo(map)
+      L.marker(lls[n-1],{icon:ci('#FF453A'),zIndexOffset:100}).addTo(map)
+      runnerRef.current=L.marker(lls[0],{icon:L.divIcon({html:`<div class="rp-wrap"><div class="rp-ring rp-r1"></div><div class="rp-ring rp-r2"></div><div class="rp-ring rp-r3"></div><div class="rp-core"></div></div>`,className:'',iconSize:[40,40],iconAnchor:[20,20]}),zIndexOffset:1000}).addTo(map)
+      map.fitBounds(L.latLngBounds(lls),{padding:[48,48]}); setShowPanel(false)
+    } catch(e){ setParseErr(e.message) }
+  }
+  const play=()=>{
+    if(playingRef.current) return
+    if(progressRef.current>=1){ progressRef.current=0; setProgress(0); showSegsUpTo(-1) }
+    playingRef.current=true; setPlaying(true)
+    const speed=ANIM_SPEEDS[speedIdx].value; let lastTs=null
+    const frame=(ts)=>{
+      if(!playingRef.current) return
+      if(!lastTs) lastTs=ts
+      const dt=Math.min(ts-lastTs,50); lastTs=ts
+      const total=coordsRef.current.length
+      progressRef.current=Math.min(progressRef.current+(speed*dt)/(ANIM_SECS_1X*1000),1)
+      const rawIdx=progressRef.current*(total-1),fi=Math.floor(rawIdx),frac=rawIdx-fi
+      if(fi<total-1){ const a=coordsRef.current[fi],b=coordsRef.current[fi+1]; runnerRef.current?.setLatLng([a.lat+(b.lat-a.lat)*frac,a.lng+(b.lng-a.lng)*frac]) }
+      showSegsUpTo(Math.floor(progressRef.current*(gradSegsRef.current.length-1)))
+      setProgress(progressRef.current)
+      if(progressRef.current<1) rafId.current=requestAnimationFrame(frame)
+      else { playingRef.current=false; setPlaying(false) }
+    }
+    rafId.current=requestAnimationFrame(frame)
+  }
+  const pause=()=>{ playingRef.current=false; setPlaying(false); cancelAnimationFrame(rafId.current) }
+  const reset=()=>{
+    pause(); progressRef.current=0; setProgress(0); showSegsUpTo(-1)
+    const c=coordsRef.current; if(c.length) runnerRef.current?.setLatLng([c[0].lat,c[0].lng])
+  }
+  const scrub=(e)=>{
+    const rect=e.currentTarget.getBoundingClientRect(),pct=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width))
+    progressRef.current=pct; setProgress(pct)
+    const total=coordsRef.current.length; if(!total||!mapObj.current) return
+    const fi=Math.min(Math.floor(pct*(total-1)),total-2)
+    showSegsUpTo(Math.floor(pct*(gradSegsRef.current.length-1)))
+    runnerRef.current?.setLatLng([coordsRef.current[fi].lat,coordsRef.current[fi].lng])
+  }
+  const pctDone=Math.round(progress*100),kmDone=parseFloat((progress*routeKm).toFixed(2))
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:10,height:'calc(100dvh - 136px)',padding:'0 16px'}}>
+      <div style={{flex:1,position:'relative',borderRadius:16,overflow:'hidden',minHeight:220}}>
+        <div ref={mapRef} style={{width:'100%',height:'100%'}}/>
+        {coords.length>0&&<div style={{position:'absolute',top:12,left:12,background:'rgba(0,0,0,0.7)',borderRadius:12,padding:'8px 14px',fontSize:13,backdropFilter:'blur(8px)',zIndex:1000,display:'flex',alignItems:'center',gap:6}}>
+          <span style={{color:gradColor(progress),fontWeight:800,fontSize:15}}>{kmDone}</span>
+          <span style={{color:'rgba(255,255,255,0.4)',fontSize:12}}>/ {routeKm} km</span>
+        </div>}
+        <button onClick={()=>setShowPanel(v=>!v)} style={{position:'absolute',top:12,right:12,background:'rgba(0,0,0,0.7)',border:'none',borderRadius:12,padding:'8px 14px',color:C.lime,fontSize:13,fontWeight:700,cursor:'pointer',backdropFilter:'blur(8px)',zIndex:1000,WebkitTapHighlightColor:'transparent'}}>{showPanel?'✕':'📍 경로 입력'}</button>
+      </div>
+      {showPanel&&<div style={{background:C.card,borderRadius:14,padding:14}}>
+        <div style={{fontSize:11,color:C.muted,marginBottom:8,fontWeight:700}}>GPS 좌표 — [[lat,lng], ...] 또는 [{'{'}lat,lng{'}'},...]</div>
+        <textarea value={gpsInput} onChange={e=>{setGpsInput(e.target.value);setParseErr('')}} rows={3} placeholder="[[37.5195, 126.9393], ...]" style={{...inp,resize:'vertical',fontSize:12,fontFamily:'monospace'}}/>
+        {parseErr&&<div style={{color:C.red,fontSize:12,marginTop:5}}>{parseErr}</div>}
+        <div style={{display:'flex',gap:8,marginTop:10}}>
+          <button onClick={()=>{setGpsInput(SAMPLE_GPS);setParseErr('')}} style={{flex:1,background:C.card2,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px',color:C.muted,fontSize:13,fontWeight:700,cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>샘플</button>
+          <button onClick={loadRoute} disabled={!gpsInput.trim()} style={{flex:2,background:C.lime,border:'none',borderRadius:10,padding:'10px',color:'#000',fontSize:13,fontWeight:900,cursor:'pointer',opacity:gpsInput.trim()?1:0.5,WebkitTapHighlightColor:'transparent'}}>경로 불러오기</button>
+        </div>
+      </div>}
+      {coords.length>0&&<div style={{background:C.card,borderRadius:14,padding:'12px 14px'}}>
+        <div onClick={scrub} style={{background:C.card2,borderRadius:4,height:5,marginBottom:12,cursor:'pointer',overflow:'hidden'}}>
+          <div style={{background:`linear-gradient(90deg,#30D158,#FFD60A)`,height:'100%',width:`${pctDone}%`,borderRadius:4,transition:'width .05s linear'}}/>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <button onClick={reset} style={{background:C.card2,border:'none',borderRadius:10,width:44,height:44,color:C.muted,cursor:'pointer',fontSize:18,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,WebkitTapHighlightColor:'transparent'}}>⏮</button>
+          <button onClick={playing?pause:play} style={{flex:1,background:playing?'#1c7a38':'#30D158',border:'none',borderRadius:12,height:44,color:'#000',cursor:'pointer',fontSize:22,fontWeight:900,display:'flex',alignItems:'center',justifyContent:'center',WebkitTapHighlightColor:'transparent'}}>{playing?'⏸':progress>=1?'↺':'▶'}</button>
+          <div style={{display:'flex',gap:4,flexShrink:0}}>
+            {ANIM_SPEEDS.map((s,i)=><button key={i} onClick={()=>setSpeedIdx(i)} style={{background:speedIdx===i?'#30D158':C.card2,border:'none',borderRadius:8,width:36,height:36,color:speedIdx===i?'#000':C.muted,cursor:'pointer',fontSize:12,fontWeight:800,WebkitTapHighlightColor:'transparent'}}>{s.label}</button>)}
+          </div>
+        </div>
+        <div style={{display:'flex',gap:0,marginTop:12,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+          {[{l:'TOTAL',v:`${routeKm} km`,c:'#30D158'},{l:'POINTS',v:`${coords.length}`,c:C.blue},{l:'DONE',v:`${kmDone} km`,c:'#FFD60A'}].map(s=>(
+            <div key={s.l} style={{flex:1,textAlign:'center'}}>
+              <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase'}}>{s.l}</div>
+              <div style={{fontSize:15,fontWeight:900,color:s.c,letterSpacing:'-0.5px'}}>{s.v}</div>
+            </div>
+          ))}
+        </div>
+      </div>}
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────
+   ADD RUN MODAL
+───────────────────────────────────────── */
+function AddRunModal({ onSave, onClose }) {
+  const [form, setForm] = useState({ date: new Date().toISOString().slice(0,10), distance:'', pace:'', hr:'', calories:'', note:'' })
+  const [saving, setSaving] = useState(false)
+
+  const handleSave = async () => {
+    if (!form.date||!form.distance) return
+    setSaving(true)
+    const entry = { date:form.date, distance:parseFloat(form.distance), pace:parseFloat(form.pace)||0, hr:parseInt(form.hr)||0, calories:parseInt(form.calories)||0, note:form.note }
+    await onSave(entry)
+    setSaving(false)
+  }
+
+  return (
+    <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.8)',zIndex:200,display:'flex',alignItems:'flex-end'}}>
+      <div style={{background:'#111',borderRadius:'24px 24px 0 0',padding:'20px 20px calc(20px + env(safe-area-inset-bottom))',width:'100%',boxSizing:'border-box',maxHeight:'90dvh',overflowY:'auto',animation:'slideUp .25s ease'}}>
+        <div style={{width:40,height:4,background:C.border,borderRadius:2,margin:'0 auto 20px'}}/>
+        <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.lime,textTransform:'uppercase',marginBottom:20}}>LOG A RUN</div>
+        <div style={{display:'flex',flexDirection:'column',gap:12}}>
+          {[
+            {label:'DATE *', key:'date', type:'date'},
+          ].map(f=>(
+            <div key={f.key}>
+              <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:6}}>{f.label}</div>
+              <input type={f.type} value={form[f.key]} onChange={e=>setForm(p=>({...p,[f.key]:e.target.value}))} style={inp}/>
+            </div>
+          ))}
+          <div>
+            <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:6}}>DISTANCE (KM) *</div>
+            <input type="number" step="0.01" min="0" placeholder="5.00" value={form.distance} onChange={e=>setForm(p=>({...p,distance:e.target.value}))} style={inp}/>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+            <div>
+              <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:6}}>PACE</div>
+              <input type="number" step="0.01" placeholder="5.30" value={form.pace} onChange={e=>setForm(p=>({...p,pace:e.target.value}))} style={inp}/>
+            </div>
+            <div>
+              <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:6}}>HEART RATE</div>
+              <input type="number" placeholder="150" value={form.hr} onChange={e=>setForm(p=>({...p,hr:e.target.value}))} style={inp}/>
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:6}}>CALORIES</div>
+            <input type="number" placeholder="400" value={form.calories} onChange={e=>setForm(p=>({...p,calories:e.target.value}))} style={inp}/>
+          </div>
+          <div>
+            <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:6}}>NOTE</div>
+            <input placeholder="코스, 컨디션..." value={form.note} onChange={e=>setForm(p=>({...p,note:e.target.value}))} style={inp}/>
+          </div>
+        </div>
+        <div style={{display:'flex',gap:10,marginTop:20}}>
+          <button onClick={onClose} style={{flex:1,background:C.card2,border:`1px solid ${C.border}`,borderRadius:14,padding:'16px',color:C.muted,fontSize:14,fontWeight:800,letterSpacing:'0.06em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>CANCEL</button>
+          <button onClick={handleSave} disabled={saving||!form.date||!form.distance} style={{flex:2,background:C.lime,border:'none',borderRadius:14,padding:'16px',color:'#000',fontSize:14,fontWeight:900,letterSpacing:'0.08em',textTransform:'uppercase',cursor:'pointer',opacity:(saving||!form.date||!form.distance)?0.5:1,WebkitTapHighlightColor:'transparent'}}>
+            {saving?'SAVING...':'SAVE RUN'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────
+   SETTINGS TAB
+───────────────────────────────────────── */
+function SettingsTab() {
+  const [claudeKey,  setClaudeKey]  = useState(()=>localStorage.getItem('claudeKey')||'')
+  const save = k => { setClaudeKey(k); localStorage.setItem('claudeKey',k) }
+
+  return (
+    <div style={{padding:'0 20px',display:'flex',flexDirection:'column',gap:16}}>
+      <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:4}}>SETTINGS</div>
+
+      <div style={{background:C.card,borderRadius:16,padding:16}}>
+        <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:4}}>CLAUDE API KEY</div>
+        <div style={{fontSize:12,color:C.dim,marginBottom:10}}>AI 코치 기능에 사용 · 로컬 저장</div>
+        <input type="password" value={claudeKey} onChange={e=>save(e.target.value)} placeholder="sk-ant-..." style={inp}/>
+        {claudeKey&&<button onClick={()=>save('')} style={{marginTop:10,background:'none',border:`1px solid ${C.border}`,borderRadius:8,padding:'7px 14px',color:C.muted,cursor:'pointer',fontSize:12,fontWeight:700,WebkitTapHighlightColor:'transparent'}}>REMOVE KEY</button>}
+      </div>
+
+      <div style={{background:C.card,borderRadius:16,padding:16}}>
+        <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:10}}>MAP</div>
+        <div style={{display:'flex',flexDirection:'column',gap:6,fontSize:13}}>
+          <div style={{display:'flex',justifyContent:'space-between'}}>
+            <span style={{color:C.muted}}>Provider</span>
+            <span style={{color:C.white,fontWeight:700}}>Leaflet + OSM</span>
+          </div>
+          <div style={{display:'flex',justifyContent:'space-between'}}>
+            <span style={{color:C.muted}}>Tiles</span>
+            <span style={{color:C.white,fontWeight:700}}>CartoDB Dark</span>
+          </div>
+          <div style={{display:'flex',justifyContent:'space-between'}}>
+            <span style={{color:C.muted}}>API Key</span>
+            <span style={{color:'#30D158',fontWeight:700}}>Not required ✓</span>
+          </div>
+        </div>
+      </div>
+
+      <div style={{background:C.card,borderRadius:16,padding:16}}>
+        <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:10}}>ABOUT</div>
+        <div style={{display:'flex',flexDirection:'column',gap:6,fontSize:13}}>
+          {[['App','Running Dashboard'],['Version','2.0.0'],['Data','JSONBin'],['AI Model','Claude Sonnet 4.6']].map(([k,v])=>(
+            <div key={k} style={{display:'flex',justifyContent:'space-between'}}>
+              <span style={{color:C.muted}}>{k}</span>
+              <span style={{color:C.white,fontWeight:700}}>{v}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────
+   MAIN APP
+───────────────────────────────────────── */
 export default function App() {
-  const [runs,        setRuns]        = useState([])
-  const [loading,     setLoading]     = useState(true)
-  const [tab,         setTab]         = useState(0)
-  const [showForm,    setShowForm]    = useState(false)
-  const [form,        setForm]        = useState({ date: '', distance: '', pace: '', hr: '', calories: '', note: '' })
-  const [saving,      setSaving]      = useState(false)
-  const [selectedIdx, setSelectedIdx] = useState(null)
-  const [aiInput,     setAiInput]     = useState('')
-  const [aiMessages,  setAiMessages]  = useState([])
-  const [aiLoading,   setAiLoading]   = useState(false)
-  const [claudeKey,   setClaudeKey]   = useState(() => localStorage.getItem('claudeKey') || '')
-  const [error,       setError]       = useState('')
-  const aiEndRef = useRef(null)
+  const [runs,       setRuns]       = useState([])
+  const [loading,    setLoading]    = useState(true)
+  const [tab,        setTab]        = useState(0)
+  const [showAdd,    setShowAdd]    = useState(false)
+  const [celebRun,   setCelebRun]   = useState(null)
+  const [error,      setError]      = useState('')
 
   const fetchRuns = useCallback(async () => {
     setLoading(true); setError('')
     try {
-      const res  = await fetch(JSONBIN_URL + '/latest', { headers: { 'X-Master-Key': API_KEY } })
+      const res  = await fetch(JSONBIN_URL+'/latest',{headers:{'X-Master-Key':API_KEY}})
       const data = await res.json()
-      setRuns(data.record?.runs || [])
+      setRuns(data.record?.runs||[])
     } catch { setError('데이터 로드 실패') }
     finally { setLoading(false) }
-  }, [])
+  },[])
 
   const saveRuns = async (newRuns) => {
-    const res = await fetch(JSONBIN_URL, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Master-Key': API_KEY },
-      body: JSON.stringify({ runs: newRuns }),
-    })
-    if (!res.ok) throw new Error('저장 실패')
+    const res = await fetch(JSONBIN_URL,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':API_KEY},body:JSON.stringify({runs:newRuns})})
+    if(!res.ok) throw new Error('저장 실패')
   }
 
-  useEffect(() => { fetchRuns() }, [fetchRuns])
-  useEffect(() => { aiEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [aiMessages, aiLoading])
+  useEffect(()=>{ fetchRuns() },[fetchRuns])
 
-  useEffect(() => {
-    const h = (e) => {
-      if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return
-      const k = e.key
-      if      (k === 'n' || k === 'N') setShowForm(true)
-      else if (k === 'd' || k === 'D') setTab(0)
-      else if (k === 'a' || k === 'A') setTab(3)
-      else if (k === 'r' || k === 'R') fetchRuns()
-      else if (k === 'Escape') { setShowForm(false); setSelectedIdx(null) }
-      else if (k === 'ArrowDown') setSelectedIdx(i => i === null ? 0 : Math.min(i + 1, runs.length - 1))
-      else if (k === 'ArrowUp')   setSelectedIdx(i => i === null ? 0 : Math.max(i - 1, 0))
-      else if (k === 'Delete' && selectedIdx !== null) handleDelete(selectedIdx)
-    }
-    window.addEventListener('keydown', h)
-    return () => window.removeEventListener('keydown', h)
-  }, [runs.length, selectedIdx, fetchRuns])
-
-  const handleAdd = async () => {
-    if (!form.date || !form.distance) return
-    setSaving(true)
-    try {
-      const entry = {
-        date: form.date, distance: parseFloat(form.distance),
-        pace: parseFloat(form.pace) || 0, hr: parseInt(form.hr) || 0,
-        calories: parseInt(form.calories) || 0, note: form.note,
-      }
-      const newRuns = [...runs, entry].sort((a, b) => a.date.localeCompare(b.date))
-      await saveRuns(newRuns); setRuns(newRuns)
-      setForm({ date: '', distance: '', pace: '', hr: '', calories: '', note: '' })
-      setShowForm(false)
-    } catch { setError('저장 실패') }
-    finally { setSaving(false) }
+  const handleAdd = async (entry) => {
+    const newRuns = [...runs,entry].sort((a,b)=>a.date.localeCompare(b.date))
+    await saveRuns(newRuns)
+    setRuns(newRuns)
+    setShowAdd(false)
+    setCelebRun(entry)
   }
 
   const handleDelete = async (idx) => {
-    const newRuns = runs.filter((_, i) => i !== idx)
-    await saveRuns(newRuns); setRuns(newRuns); setSelectedIdx(null)
+    const newRuns = runs.filter((_,i)=>i!==idx)
+    await saveRuns(newRuns); setRuns(newRuns)
   }
-
-  /* 통계 */
-  const now        = new Date()
-  const weekAgo    = new Date(now - 7 * 86400000).toISOString().slice(0, 10)
-  const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
-  const weekRuns   = runs.filter(r => r.date >= weekAgo)
-  const monthRuns  = runs.filter(r => r.date >= monthStart)
-  const weekKm     = parseFloat(weekRuns.reduce((s, r) => s + r.distance, 0).toFixed(1))
-  const monthKm    = parseFloat(monthRuns.reduce((s, r) => s + r.distance, 0).toFixed(1))
-  const paceRuns   = runs.filter(r => r.pace > 0)
-  const avgPace    = paceRuns.length ? paceRuns.reduce((s, r) => s + r.pace, 0) / paceRuns.length : 0
-  const hrRuns     = runs.filter(r => r.hr > 0)
-  const avgHr      = hrRuns.length ? Math.round(hrRuns.reduce((s, r) => s + r.hr, 0) / hrRuns.length) : 0
-  const totalCal   = runs.reduce((s, r) => s + r.calories, 0)
-  const recent     = runs.slice(-14)
-
-  const askAI = async () => {
-    if (!aiInput.trim() || !claudeKey) return
-    const userMsg  = aiInput.trim()
-    const nextMsgs = [...aiMessages, { role: 'user', content: userMsg }]
-    setAiMessages(nextMsgs); setAiInput(''); setAiLoading(true)
-    const summary = `이번주 ${weekKm}km(${weekRuns.length}회), 이번달 ${monthKm}km(${monthRuns.length}회), 평균 페이스 ${paceToStr(avgPace)}/km, 평균 심박 ${avgHr}bpm, 총 칼로리 ${totalCal}kcal`
-    try {
-      const res = await fetch(CLAUDE_API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1024, system: `당신은 전문 러닝 코치입니다. 사용자 데이터: ${summary}. 구체적이고 실용적인 한국어 조언을 제공하세요.`, messages: nextMsgs }),
-      })
-      const data = await res.json()
-      setAiMessages(m => [...m, { role: 'assistant', content: data.content?.[0]?.text || '응답 없음' }])
-    } catch {
-      setAiMessages(m => [...m, { role: 'assistant', content: '오류. API 키를 확인해주세요.' }])
-    } finally { setAiLoading(false) }
-  }
-
-  const saveClaudeKey = k => { setClaudeKey(k); localStorage.setItem('claudeKey', k) }
 
   return (
-    <div style={{ minHeight: '100dvh', background: '#16171d', color: '#f3f4f6', fontFamily: 'system-ui,"Segoe UI",sans-serif', display: 'flex', flexDirection: 'column', paddingBottom: 'calc(62px + env(safe-area-inset-bottom))' }}>
+    <div style={{minHeight:'100dvh',background:C.bg,color:C.white,fontFamily:'-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif',display:'flex',flexDirection:'column',paddingBottom:'calc(62px + env(safe-area-inset-bottom))'}}>
 
       {/* 헤더 */}
-      <div style={{ position: 'sticky', top: 0, zIndex: 50, background: '#16171d', borderBottom: '1px solid #2e303a', padding: 'calc(env(safe-area-inset-top) + 12px) 16px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 20 }}>🏃</span>
-          <span style={{ fontSize: 17, fontWeight: 700, color: '#c084fc' }}>러닝 대시보드</span>
+      <div style={{position:'sticky',top:0,zIndex:50,background:'rgba(0,0,0,0.9)',backdropFilter:'blur(20px)',borderBottom:`1px solid ${C.border}`,padding:'calc(env(safe-area-inset-top) + 12px) 20px 12px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:C.white}}>RUNNING</div>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          {error&&<div style={{fontSize:11,color:C.red,fontWeight:700}}>{error}</div>}
+          <button onClick={fetchRuns} style={{background:'none',border:`1px solid ${C.border}`,borderRadius:20,padding:'5px 12px',color:C.muted,fontSize:12,fontWeight:700,cursor:'pointer',WebkitTapHighlightColor:'transparent',letterSpacing:'0.06em'}}>↻</button>
         </div>
-        <button onClick={fetchRuns} style={{ background: 'none', border: '1px solid #2e303a', borderRadius: 8, color: '#9ca3af', padding: '7px 12px', fontSize: 14, cursor: 'pointer', minHeight: 36, WebkitTapHighlightColor: 'transparent' }}>↻</button>
       </div>
 
-      {error && (
-        <div style={{ margin: '10px 16px 0', background: '#7f1d1d', color: '#fca5a5', padding: '10px 14px', borderRadius: 10, fontSize: 13, display: 'flex', justifyContent: 'space-between' }}>
-          {error}
-          <button onClick={() => setError('')} style={{ background: 'none', border: 'none', color: '#fca5a5', cursor: 'pointer', fontSize: 16 }}>✕</button>
-        </div>
-      )}
-
-      <div style={{ flex: 1, padding: '14px 16px', overflowY: 'auto' }}>
+      {/* 콘텐츠 */}
+      <div style={{flex:1,overflowY:'auto',paddingTop:16}}>
         {loading ? (
-          <div style={{ textAlign: 'center', padding: 60, color: '#9ca3af' }}>로딩 중...</div>
+          <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'80px 20px',gap:16}}>
+            <div style={{fontSize:14,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',animation:'pulse 1.5s ease infinite'}}>LOADING...</div>
+          </div>
         ) : (
           <>
-            {/* ── 홈 ── */}
-            {tab === 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <TouchBtn onClick={() => setShowForm(true)} style={{ width: '100%', fontSize: 16 }}>+ 오늘 러닝 기록 추가</TouchBtn>
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                  <StatCard label="이번주"     value={`${weekKm}km`}  sub={`${weekRuns.length}회`}  color="#34d399" />
-                  <StatCard label="이번달"     value={`${monthKm}km`} sub={`${monthRuns.length}회`} color="#60a5fa" />
-                  <StatCard label="평균 페이스" value={paceToStr(avgPace)} sub="/km"               color="#f472b6" />
-                  <StatCard label="평균 심박"  value={avgHr ? `${avgHr}bpm` : '-'}                color="#fb923c" />
-                  <StatCard label="총 칼로리"  value={totalCal ? totalCal.toLocaleString() : '-'} sub="kcal" color="#facc15" />
-                </div>
-                <div style={{ background: '#1f2028', borderRadius: 14, padding: 16 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 14, fontSize: 14 }}>목표 달성률</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-around' }}>
-                    <GoalRing label="주간 목표" value={weekKm}  goal={GOALS.weeklyKm}  unit="km" color="#34d399" />
-                    <GoalRing label="월간 목표" value={monthKm} goal={GOALS.monthlyKm} unit="km" color="#60a5fa" />
-                    <GoalRing label="페이스 목표" value={avgPace > 0 ? parseFloat(Math.min(GOALS.targetPace, avgPace).toFixed(2)) : 0} goal={GOALS.targetPace} unit="분" color="#f472b6" />
-                  </div>
-                </div>
-                {recent.length > 0 && (
-                  <>
-                    <ChartCard title="거리 추이 (km)">
-                      <ResponsiveContainer width="100%" height={160}>
-                        <BarChart data={recent} margin={{ left: -20 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#2e303a" />
-                          <XAxis dataKey="date" tick={{ fill: '#9ca3af', fontSize: 9 }} tickFormatter={d => d.slice(5)} />
-                          <YAxis tick={{ fill: '#9ca3af', fontSize: 9 }} />
-                          <Tooltip {...tooltipStyle} />
-                          <Bar dataKey="distance" fill="#7c3aed" radius={[4,4,0,0]} name="거리(km)" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </ChartCard>
-                    <ChartCard title="페이스 추이 (분/km)">
-                      <ResponsiveContainer width="100%" height={160}>
-                        <LineChart data={recent.filter(r => r.pace > 0)} margin={{ left: -10 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#2e303a" />
-                          <XAxis dataKey="date" tick={{ fill: '#9ca3af', fontSize: 9 }} tickFormatter={d => d.slice(5)} />
-                          <YAxis tick={{ fill: '#9ca3af', fontSize: 9 }} tickFormatter={paceToStr} domain={['auto','auto']} />
-                          <Tooltip {...tooltipStyle} formatter={v => [paceToStr(v), '페이스']} />
-                          <Line type="monotone" dataKey="pace" stroke="#f472b6" strokeWidth={2} dot={false} />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </ChartCard>
-                    <div style={{ display: 'flex', gap: 10 }}>
-                      <ChartCard title="심박수 (bpm)">
-                        <ResponsiveContainer width="100%" height={140}>
-                          <LineChart data={recent.filter(r => r.hr > 0)} margin={{ left: -20 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#2e303a" />
-                            <XAxis dataKey="date" tick={{ fill: '#9ca3af', fontSize: 9 }} tickFormatter={d => d.slice(5)} />
-                            <YAxis tick={{ fill: '#9ca3af', fontSize: 9 }} />
-                            <Tooltip {...tooltipStyle} />
-                            <Line type="monotone" dataKey="hr" stroke="#fb923c" strokeWidth={2} dot={false} />
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </ChartCard>
-                      <ChartCard title="칼로리 (kcal)">
-                        <ResponsiveContainer width="100%" height={140}>
-                          <BarChart data={recent.filter(r => r.calories > 0)} margin={{ left: -20 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#2e303a" />
-                            <XAxis dataKey="date" tick={{ fill: '#9ca3af', fontSize: 9 }} tickFormatter={d => d.slice(5)} />
-                            <YAxis tick={{ fill: '#9ca3af', fontSize: 9 }} />
-                            <Tooltip {...tooltipStyle} />
-                            <Bar dataKey="calories" fill="#facc15" radius={[4,4,0,0]} />
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </ChartCard>
-                    </div>
-                  </>
-                )}
-                {recent.length === 0 && (
-                  <div style={{ textAlign: 'center', padding: '32px 0', color: '#6b7280' }}>
-                    <div style={{ fontSize: 40, marginBottom: 10 }}>🏃</div>
-                    <div>아직 기록이 없습니다</div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ── 기록 ── */}
-            {tab === 1 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                  <span style={{ fontWeight: 600 }}>전체 기록 ({runs.length}회)</span>
-                  <TouchBtn onClick={() => setShowForm(true)} style={{ padding: '10px 16px', fontSize: 13 }}>+ 추가</TouchBtn>
-                </div>
-                {runs.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: 40, color: '#6b7280' }}>기록이 없습니다.</div>
-                ) : (
-                  [...runs].reverse().map((r, i) => {
-                    const origIdx = runs.length - 1 - i, sel = selectedIdx === origIdx
-                    return (
-                      <div key={i} onClick={() => setSelectedIdx(sel ? null : origIdx)}
-                        style={{ background: sel ? '#2e1f4a' : '#1f2028', borderRadius: 14, padding: '14px 16px', cursor: 'pointer', border: `1px solid ${sel ? '#7c3aed' : 'transparent'}`, transition: 'all .15s' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                          <span style={{ color: '#9ca3af', fontSize: 13 }}>{r.date}</span>
-                          <span style={{ color: '#34d399', fontWeight: 700, fontSize: 16 }}>{r.distance} km</span>
-                        </div>
-                        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: 13, color: '#f472b6' }}>⏱ {paceToStr(r.pace)}/km</span>
-                          {r.hr > 0       && <span style={{ fontSize: 13, color: '#fb923c' }}>❤️ {r.hr}bpm</span>}
-                          {r.calories > 0 && <span style={{ fontSize: 13, color: '#facc15' }}>🔥 {r.calories}kcal</span>}
-                        </div>
-                        {r.note && <div style={{ color: '#6b7280', fontSize: 12, marginTop: 6 }}>{r.note}</div>}
-                        {sel && (
-                          <div style={{ marginTop: 10 }}>
-                            <TouchBtn onClick={e => { e.stopPropagation(); handleDelete(origIdx) }} color="#7f1d1d" style={{ width: '100%', fontSize: 14, padding: '10px' }}>이 기록 삭제</TouchBtn>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })
-                )}
-              </div>
-            )}
-
-            {/* ── 지도 (항상 마운트) ── */}
-            <div style={{ display: tab === 2 ? 'block' : 'none' }}>
-              <MapTab active={tab === 2} />
-            </div>
-
-            {/* ── AI 코치 ── */}
-            {tab === 3 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: 'calc(100dvh - 180px)' }}>
-                {!claudeKey && (
-                  <div style={{ background: '#1f2028', borderRadius: 14, padding: 14 }}>
-                    <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 7 }}>Claude API Key</div>
-                    <input type="password" placeholder="sk-ant-..." onChange={e => saveClaudeKey(e.target.value)} style={inputStyle} />
-                  </div>
-                )}
-                <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {aiMessages.length === 0 && (
-                    <div style={{ textAlign: 'center', color: '#6b7280', padding: '32px 0' }}>
-                      <div style={{ fontSize: 36, marginBottom: 10 }}>🤖</div>
-                      <div style={{ fontWeight: 600, marginBottom: 6 }}>AI 러닝 코치</div>
-                      <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        {['이번주 훈련 평가해줘', '페이스 향상 방법', '다음 훈련 계획 세워줘'].map(q => (
-                          <button key={q} onClick={() => setAiInput(q)} style={{ background: '#2e303a', border: 'none', borderRadius: 20, padding: '10px 16px', color: '#c084fc', cursor: 'pointer', fontSize: 14, WebkitTapHighlightColor: 'transparent' }}>{q}</button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {aiMessages.map((m, i) => (
-                    <div key={i} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '85%', background: m.role === 'user' ? '#5b21b6' : '#2e303a', borderRadius: m.role === 'user' ? '18px 18px 4px 18px' : '18px 18px 18px 4px', padding: '12px 16px', fontSize: 14, lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>{m.content}</div>
-                  ))}
-                  {aiLoading && <div style={{ alignSelf: 'flex-start', background: '#2e303a', borderRadius: '18px 18px 18px 4px', padding: '12px 16px', color: '#9ca3af', fontSize: 14 }}>답변 생성 중...</div>}
-                  <div ref={aiEndRef} />
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <input value={aiInput} onChange={e => setAiInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); askAI() } }}
-                    placeholder={claudeKey ? '질문 입력...' : '설정 탭에서 API 키를 입력하세요'}
-                    style={{ ...inputStyle, flex: 1 }} disabled={!claudeKey} />
-                  <TouchBtn onClick={askAI} disabled={!claudeKey || !aiInput.trim() || aiLoading} style={{ padding: '12px 18px', flexShrink: 0 }}>↑</TouchBtn>
-                </div>
-              </div>
-            )}
-
-            {/* ── 설정 ── */}
-            {tab === 4 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <div style={{ background: '#1f2028', borderRadius: 14, padding: 16 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 4 }}>Claude API Key</div>
-                  <div style={{ color: '#6b7280', fontSize: 12, marginBottom: 10 }}>AI 코치 기능 · 로컬 저장</div>
-                  <input type="password" value={claudeKey} onChange={e => saveClaudeKey(e.target.value)} placeholder="sk-ant-..." style={inputStyle} />
-                  {claudeKey && <button onClick={() => saveClaudeKey('')} style={{ marginTop: 10, background: 'none', border: '1px solid #4b5563', borderRadius: 8, padding: '7px 14px', color: '#9ca3af', cursor: 'pointer', fontSize: 13 }}>키 삭제</button>}
-                </div>
-
-                <div style={{ background: '#1f2028', borderRadius: 14, padding: 16 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 6 }}>🗺️ 지도 정보</div>
-                  <div style={{ background: '#2e303a', borderRadius: 10, padding: '10px 12px', fontSize: 13, color: '#9ca3af', lineHeight: 1.8 }}>
-                    <div>지도: <span style={{ color: '#34d399' }}>Leaflet + OpenStreetMap</span></div>
-                    <div>타일: <span style={{ color: '#60a5fa' }}>CartoDB Dark Matter</span></div>
-                    <div>API 키: <span style={{ color: '#34d399' }}>불필요 (완전 무료)</span></div>
-                  </div>
-                </div>
-
-                <div style={{ background: '#1f2028', borderRadius: 14, overflow: 'hidden' }}>
-                  <div style={{ padding: '14px 16px', borderBottom: '1px solid #2e303a', fontWeight: 600 }}>⌨️ 키보드 단축키</div>
-                  {SHORTCUTS.map((s, i) => (
-                    <div key={i} style={{ display: 'flex', alignItems: 'center', padding: '11px 16px', borderBottom: i < SHORTCUTS.length - 1 ? '1px solid #2e303a' : 'none' }}>
-                      <kbd style={{ background: '#2e303a', border: '1px solid #4b5563', borderRadius: 6, padding: '3px 10px', fontFamily: 'monospace', fontSize: 12, color: '#c084fc', minWidth: 48, textAlign: 'center', marginRight: 14, flexShrink: 0 }}>{s.keys}</kbd>
-                      <span style={{ color: '#d1d5db', fontSize: 14 }}>{s.desc}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            {tab===0&&<HomeTab runs={runs} onAdd={()=>setShowAdd(true)}/>}
+            {tab===1&&<RecordsTab runs={runs} onAdd={()=>setShowAdd(true)} onDelete={handleDelete}/>}
+            <div style={{display:tab===2?'block':'none'}}><MapTab active={tab===2}/></div>
+            {tab===3&&<StatsTab runs={runs}/>}
+            {tab===4&&<AITab runs={runs}/>}
+            {tab===5&&<SettingsTab/>}
           </>
         )}
       </div>
 
       {/* 하단 탭 바 */}
-      <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 100, background: '#1f2028', borderTop: '1px solid #2e303a', display: 'flex', paddingBottom: 'env(safe-area-inset-bottom)' }}>
-        {TABS.map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)}
-            style={{ flex: 1, background: 'none', border: 'none', cursor: 'pointer', padding: '9px 4px 7px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation', minHeight: 54, position: 'relative' }}>
-            <span style={{ fontSize: 20, lineHeight: 1 }}>{t.icon}</span>
-            <span style={{ fontSize: 10, color: tab === t.id ? '#c084fc' : '#6b7280', fontWeight: tab === t.id ? 700 : 400 }}>{t.label}</span>
-            {tab === t.id && <span style={{ position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom) + 5px)', width: 4, height: 4, borderRadius: '50%', background: '#c084fc' }} />}
+      <div style={{position:'fixed',bottom:0,left:0,right:0,zIndex:100,background:'rgba(0,0,0,0.95)',backdropFilter:'blur(20px)',borderTop:`1px solid ${C.border}`,display:'flex',paddingBottom:'env(safe-area-inset-bottom)'}}>
+        {TABS.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,background:'none',border:'none',cursor:'pointer',padding:'10px 4px 8px',display:'flex',flexDirection:'column',alignItems:'center',gap:3,WebkitTapHighlightColor:'transparent',touchAction:'manipulation',minHeight:52,position:'relative'}}>
+            <div style={{width:6,height:6,borderRadius:'50%',background:tab===t.id?C.lime:'transparent',marginBottom:1,transition:'all .2s'}}/>
+            <span style={{fontSize:9,fontWeight:800,letterSpacing:'0.12em',color:tab===t.id?C.lime:C.muted,textTransform:'uppercase'}}>{t.label}</span>
           </button>
         ))}
+        {/* 설정 탭 — 작게 */}
+        <button onClick={()=>setTab(5)} style={{flex:0.6,background:'none',border:'none',cursor:'pointer',padding:'10px 4px 8px',display:'flex',flexDirection:'column',alignItems:'center',gap:3,WebkitTapHighlightColor:'transparent',touchAction:'manipulation',minHeight:52,position:'relative'}}>
+          <div style={{width:6,height:6,borderRadius:'50%',background:tab===5?C.lime:'transparent',marginBottom:1}}/>
+          <span style={{fontSize:9,fontWeight:800,letterSpacing:'0.12em',color:tab===5?C.lime:C.muted,textTransform:'uppercase'}}>SET</span>
+        </button>
       </div>
 
-      {/* 기록 추가 모달 — Bottom Sheet */}
-      {showForm && (
-        <div onClick={e => e.target === e.currentTarget && setShowForm(false)}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', zIndex: 200, display: 'flex', alignItems: 'flex-end' }}>
-          <div style={{ background: '#1f2028', borderRadius: '20px 20px 0 0', padding: '18px 20px calc(20px + env(safe-area-inset-bottom))', width: '100%', boxSizing: 'border-box', maxHeight: '90dvh', overflowY: 'auto', animation: 'slideUp .25s ease' }}>
-            <div style={{ width: 40, height: 4, background: '#4b5563', borderRadius: 2, margin: '0 auto 18px' }} />
-            <div style={{ fontWeight: 700, fontSize: 17, marginBottom: 16 }}>러닝 기록 추가</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <FormField label="날짜 *"><input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} style={inputStyle} /></FormField>
-              <FormField label="거리 (km) *"><input type="number" step="0.1" min="0" placeholder="5.0" value={form.distance} onChange={e => setForm(f => ({ ...f, distance: e.target.value }))} style={inputStyle} /></FormField>
-              <div style={{ display: 'flex', gap: 10 }}>
-                <FormField label="페이스 (분.초)"><input type="number" step="0.01" placeholder="5.30" value={form.pace} onChange={e => setForm(f => ({ ...f, pace: e.target.value }))} style={inputStyle} /></FormField>
-                <FormField label="심박수 (bpm)"><input type="number" placeholder="150" value={form.hr} onChange={e => setForm(f => ({ ...f, hr: e.target.value }))} style={inputStyle} /></FormField>
-              </div>
-              <FormField label="칼로리 (kcal)"><input type="number" placeholder="400" value={form.calories} onChange={e => setForm(f => ({ ...f, calories: e.target.value }))} style={inputStyle} /></FormField>
-              <FormField label="메모"><input placeholder="코스, 컨디션 등" value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} style={inputStyle} /></FormField>
-            </div>
-            <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
-              <TouchBtn onClick={() => setShowForm(false)} color="#2e303a" style={{ flex: 1 }}>취소</TouchBtn>
-              <TouchBtn onClick={handleAdd} disabled={saving || !form.date || !form.distance} style={{ flex: 2 }}>{saving ? '저장 중...' : '저장하기'}</TouchBtn>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* 기록 추가 모달 */}
+      {showAdd&&<AddRunModal onSave={handleAdd} onClose={()=>setShowAdd(false)}/>}
+
+      {/* 축하 오버레이 */}
+      {celebRun&&<Celebration run={celebRun} onDone={()=>setCelebRun(null)}/>}
 
       <style>{`
-        @keyframes slideUp { from { transform: translateY(100%) } to { transform: translateY(0) } }
+        @keyframes slideUp   { from { transform: translateY(100%) } to { transform: translateY(0) } }
+        @keyframes confFall  { 0% { transform: translateY(0) rotate(0deg); opacity:1 } 100% { transform: translateY(110vh) rotate(720deg); opacity:0 } }
+        @keyframes celeb-in  { 0% { transform: scale(.8) translateY(20px); opacity:0 } 100% { transform: scale(1) translateY(0); opacity:1 } }
+        @keyframes pulse     { 0%,100% { opacity:.4 } 50% { opacity:1 } }
+        .celeb-in { animation: celeb-in .6s cubic-bezier(.34,1.56,.64,1) both }
+
         * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
         input[type="number"] { -moz-appearance: textfield; }
         input[type="number"]::-webkit-outer-spin-button,
         input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
-        .leaflet-container { font-family: inherit; background: #1a1a1a; }
-        .leaflet-control-attribution { font-size: 9px !important; background: rgba(0,0,0,0.4) !important; color: #555 !important; }
-        .leaflet-control-attribution a { color: #555 !important; }
-        .leaflet-control-zoom a { background: rgba(0,0,0,0.7) !important; color: #fff !important; border-color: #333 !important; }
 
-        /* ── 이동 포인트 pulse 애니메이션 ── */
-        .rp-wrap {
-          position: relative; width: 40px; height: 40px;
-          /* iconAnchor:[20,20] 이 이미 중앙 정렬하므로 transform 불필요 */
-        }
-        .rp-core {
-          position: absolute; top: 50%; left: 50%;
-          transform: translate(-50%, -50%);
-          width: 14px; height: 14px;
-          background: #ffffff;
-          border-radius: 50%;
-          box-shadow: 0 0 0 3px rgba(255,255,255,0.35),
-                      0 0 16px 4px rgba(255,255,255,0.6);
-          z-index: 3;
-        }
-        .rp-ring {
-          position: absolute; top: 50%; left: 50%;
-          transform: translate(-50%, -50%) scale(0);
-          border-radius: 50%;
-          background: rgba(255, 255, 255, 0.35);
-          animation: rpPulse 2s ease-out infinite;
-        }
-        .rp-r1 { width: 36px; height: 36px; animation-delay: 0s; }
-        .rp-r2 { width: 36px; height: 36px; animation-delay: 0.65s; }
-        .rp-r3 { width: 36px; height: 36px; animation-delay: 1.3s; }
+        .leaflet-container { font-family: inherit; background: #0a0a0a; }
+        .leaflet-control-attribution { font-size:9px !important; background:rgba(0,0,0,0.5) !important; color:#444 !important; }
+        .leaflet-control-attribution a { color:#444 !important; }
+        .leaflet-control-zoom a { background:rgba(0,0,0,0.8) !important; color:#fff !important; border-color:#333 !important; }
+
+        .rp-wrap  { position:relative; width:40px; height:40px; }
+        .rp-core  { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:14px; height:14px; background:#fff; border-radius:50%; box-shadow:0 0 0 3px rgba(255,255,255,.3), 0 0 16px 4px rgba(255,255,255,.6); z-index:3; }
+        .rp-ring  { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%) scale(0); border-radius:50%; background:rgba(255,255,255,.35); animation:rpPulse 2s ease-out infinite; width:36px; height:36px; }
+        .rp-r1    { animation-delay:0s }
+        .rp-r2    { animation-delay:.65s }
+        .rp-r3    { animation-delay:1.3s }
         @keyframes rpPulse {
-          0%   { transform: translate(-50%,-50%) scale(0.3); opacity: 0.8; }
-          100% { transform: translate(-50%,-50%) scale(1.6); opacity: 0; }
+          0%   { transform:translate(-50%,-50%) scale(.3); opacity:.8 }
+          100% { transform:translate(-50%,-50%) scale(1.6); opacity:0 }
         }
       `}</style>
     </div>
