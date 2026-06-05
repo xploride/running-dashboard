@@ -675,6 +675,7 @@ function RecordsTab({ runs, onAdd, onDelete, gpxStore, onViewRoute }) {
                     const hasLS   = lsHasGPXFuzzy(r.date)
                     const hasSess = !!gpxLookup(gpxStore, r.date)
                     const isGPX   = r.source === 'gpx' || hasLS || hasSess
+                    console.log(`[RecordsTab] ${r.date}: source=${r.source}, hasLS=${hasLS}, hasSess=${hasSess}, isGPX=${isGPX}`)
                     if (!isGPX) return null
                     if (!hasLS && !hasSess) return (
                       <div style={{marginTop:10,background:`${C.orange}15`,border:`1px solid ${C.orange}33`,borderRadius:10,padding:'9px 12px',color:C.muted,fontSize:12,display:'flex',alignItems:'center',gap:6}}>
@@ -1450,17 +1451,35 @@ export default function App() {
     try {
       const res  = await fetch(JSONBIN_URL+'/latest',{headers:{'X-Master-Key':API_KEY}})
       const data = await res.json()
-      setRuns(data.record?.runs || [])
+      console.log('[fetchRuns] record keys:', Object.keys(data.record || {}))
+
+      const runsData  = data.record?.runs  || []
       const routesData = data.record?.routes || {}
+      console.log('[fetchRuns] runs count:', runsData.length)
+      console.log('[fetchRuns] routes dates:', Object.keys(routesData))
+      setRuns(runsData)
       setRoutes(routesData)
+
       // JSONBin routes → gpxStore (앱 시작 시 좌표 복원)
       const store = {}
       Object.entries(routesData).forEach(([date, arr]) => {
         const coords = arr.map(([lat, lng]) => ({ lat, lng }))
         store[date] = { coords, meta: { runEntry:{ date }, name:null, dateStr:null, duration:null, elevGain:0, avgHR:null, routeDist:0, pointCount:coords.length, hasElevation:false, hasHR:false } }
+        console.log(`[fetchRuns] gpxStore[${date}] = ${coords.length}pts`)
       })
+      if (Object.keys(store).length === 0) console.warn('[fetchRuns] gpxStore empty — routes 없음 (GPX 재업로드 필요)')
       setGpxStore(store)
-    } catch { setError('데이터 로드 실패') }
+
+      // localStorage 상태도 함께 확인
+      runsData.filter(r => r.source === 'gpx').forEach(r => {
+        const inLS  = lsHasGPXFuzzy(r.date)
+        const inDB  = !!routesData[r.date]
+        console.log(`[fetchRuns] GPX run ${r.date}: jsonbin=${inDB}, localStorage=${inLS}`)
+      })
+    } catch (err) {
+      console.error('[fetchRuns] error:', err)
+      setError('데이터 로드 실패')
+    }
     finally { setLoading(false) }
   },[])
 
