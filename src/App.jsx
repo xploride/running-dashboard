@@ -529,7 +529,7 @@ function RecentRunCard({ run }) {
 /* ─────────────────────────────────────────
    RECORDS TAB (TIMELINE)
 ───────────────────────────────────────── */
-function RecordsTab({ runs, onAdd, onDelete }) {
+function RecordsTab({ runs, onAdd, onDelete, gpxStore, onViewRoute }) {
   const [selectedIdx, setSelectedIdx] = useState(null)
   const sorted = [...runs].reverse()
 
@@ -592,8 +592,17 @@ function RecordsTab({ runs, onAdd, onDelete }) {
                     </div>}
                   </div>
                   {r.note&&<div style={{color:C.muted,fontSize:12,marginTop:8,fontStyle:'italic'}}>"{r.note}"</div>}
+
+                  {/* 경로 보기 버튼 — gpxStore에 해당 날짜 GPX가 있을 때만 표시 */}
+                  {gpxStore?.[r.date] && (
+                    <button onClick={e=>{e.stopPropagation();onViewRoute(r.date)}}
+                      style={{marginTop:10,width:'100%',background:`${C.lime}18`,border:`1px solid ${C.lime}55`,borderRadius:10,padding:'9px',color:C.lime,fontSize:12,fontWeight:800,letterSpacing:'0.08em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+                      <span style={{fontSize:14}}>▶</span> 경로 보기
+                    </button>
+                  )}
+
                   {sel&&<button onClick={e=>{e.stopPropagation();onDelete(r._origIdx);setSelectedIdx(null)}}
-                    style={{marginTop:12,width:'100%',background:C.red+'22',border:`1px solid ${C.red}44`,borderRadius:10,padding:'10px',color:C.red,fontSize:12,fontWeight:800,letterSpacing:'0.06em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
+                    style={{marginTop:8,width:'100%',background:C.red+'22',border:`1px solid ${C.red}44`,borderRadius:10,padding:'10px',color:C.red,fontSize:12,fontWeight:800,letterSpacing:'0.06em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
                     DELETE RUN
                   </button>}
                 </div>
@@ -800,11 +809,12 @@ function AITab({ runs }) {
 /* ─────────────────────────────────────────
    MAP TAB (Apple Health style)
 ───────────────────────────────────────── */
-function MapTab({ active, uploadedGPS, gpxMeta, onUploadConsumed }) {
+function MapTab({ active, uploadedGPS, gpxMeta, onUploadConsumed, autoPlay, onAutoPlayDone }) {
   const mapRef=useRef(null),mapObj=useRef(null),bgLineRef=useRef(null)
   const gradSegsRef=useRef([]),lastVisibleRef=useRef(-1)
   const runnerRef=useRef(null),rafId=useRef(null)
   const progressRef=useRef(0),playingRef=useRef(false),coordsRef=useRef([])
+  const pendingPlayRef=useRef(false)
 
   const [activated,  setActivated]  = useState(false)
   const [mapReady,   setMapReady]   = useState(false)
@@ -828,15 +838,27 @@ function MapTab({ active, uploadedGPS, gpxMeta, onUploadConsumed }) {
     setMapReady(true)
   },[activated])
 
-  // XML 업로드 시 자동 로드
+  // GPX 업로드 시 자동 로드
   useEffect(()=>{
     if(!uploadedGPS||!mapReady) return
+    if(autoPlay) pendingPlayRef.current=true
     setGpsInput(uploadedGPS)
     setParseErr('')
     loadRouteFrom(uploadedGPS)
     onUploadConsumed?.()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[uploadedGPS, mapReady])
+
+  // 경로 로드 완료 후 자동 재생
+  useEffect(()=>{
+    if(pendingPlayRef.current && coords.length > 0){
+      pendingPlayRef.current=false
+      onAutoPlayDone?.()
+      setTimeout(()=>play(), 600)  // 지도 렌더링 후 재생
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[coords])
+
   useEffect(()=>{ if(active&&mapObj.current) setTimeout(()=>mapObj.current.invalidateSize(),50) },[active])
   useEffect(()=>{ coordsRef.current=coords },[coords])
 
@@ -1344,7 +1366,17 @@ export default function App() {
   const [error,       setError]       = useState('')
   const [uploadedGPS, setUploadedGPS] = useState(null)
   const [gpxMeta,     setGpxMeta]     = useState(null)
+  const [gpxStore,    setGpxStore]    = useState({})   // { 'YYYY-MM-DD': {coords, meta} } — 세션 전용
+  const [autoPlay,    setAutoPlay]    = useState(false)
   const fileInputRef = useRef(null)
+
+  // GPX를 세션 스토어에 저장하는 헬퍼
+  const storeGPX = (coords, meta) => {
+    const date = meta.runEntry?.date
+    if (date) setGpxStore(prev => ({ ...prev, [date]: { coords, meta } }))
+    setUploadedGPS(JSON.stringify(coords.map(p => [p.lat, p.lng])))
+    setGpxMeta(meta)
+  }
 
   const handleGPXUpload = (e) => {
     const file = e.target.files[0]
@@ -1354,12 +1386,9 @@ export default function App() {
       try {
         const isGPX = /\.(gpx)$/i.test(file.name)
         if (isGPX) {
-          // GPX: 좌표 + 메타데이터 풀 파싱
           const { coords, meta } = parseGPXFile(evt.target.result)
-          setUploadedGPS(JSON.stringify(coords.map(p => [p.lat, p.lng])))
-          setGpxMeta(meta)
+          storeGPX(coords, meta)
         } else {
-          // XML / KML: 좌표만 파싱
           const pts = parseXMLtoGPS(evt.target.result)
           if (pts.length < 2) throw new Error('좌표가 2개 미만입니다.')
           setUploadedGPS(JSON.stringify(pts.map(p => [p.lat, p.lng])))
@@ -1415,8 +1444,16 @@ export default function App() {
 
   // 설정 탭에서 GPX 업로드
   const handleGPXFromSettings = (coords, meta) => {
-    setUploadedGPS(JSON.stringify(coords.map(p=>[p.lat,p.lng])))
-    setGpxMeta(meta)
+    storeGPX(coords, meta)
+    setTab(2)
+  }
+
+  // LOG 탭 "경로 보기" — gpxStore에서 날짜 매칭 후 MAP 탭으로 이동
+  const handleViewRoute = (date) => {
+    const gpx = gpxStore[date]
+    if (!gpx) return
+    storeGPX(gpx.coords, gpx.meta)
+    setAutoPlay(true)
     setTab(2)
   }
 
@@ -1446,8 +1483,8 @@ export default function App() {
         ) : (
           <>
             {tab===0&&<HomeTab runs={runs} onAdd={()=>setShowAdd(true)}/>}
-            {tab===1&&<RecordsTab runs={runs} onAdd={()=>setShowAdd(true)} onDelete={handleDelete}/>}
-            <div style={{display:tab===2?'block':'none'}}><MapTab active={tab===2} uploadedGPS={uploadedGPS} gpxMeta={gpxMeta} onUploadConsumed={()=>{ setUploadedGPS(null) }}/></div>
+            {tab===1&&<RecordsTab runs={runs} onAdd={()=>setShowAdd(true)} onDelete={handleDelete} gpxStore={gpxStore} onViewRoute={handleViewRoute}/>}
+            <div style={{display:tab===2?'block':'none'}}><MapTab active={tab===2} uploadedGPS={uploadedGPS} gpxMeta={gpxMeta} onUploadConsumed={()=>setUploadedGPS(null)} autoPlay={autoPlay} onAutoPlayDone={()=>setAutoPlay(false)}/></div>
             {tab===3&&<StatsTab runs={runs}/>}
             {tab===4&&<AITab runs={runs}/>}
             {tab===5&&<SettingsTab onImportRuns={handleImportRuns} onGPXLoad={handleGPXFromSettings}/>}
