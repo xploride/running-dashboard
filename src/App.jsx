@@ -133,15 +133,42 @@ function parseGPXFile(xmlText) {
   const hrPts = points.filter(p => p.hr)
   const avgHR = hrPts.length ? Math.round(hrPts.reduce((s, p) => s + p.hr, 0) / hrPts.length) : null
 
+  // 좌표 기반 총 거리 계산 (JSONBin에 저장될 요약 데이터용)
+  let routeDist = 0
+  for (let i = 1; i < points.length; i++)
+    routeDist += haversine(points[i-1].lat, points[i-1].lng, points[i].lat, points[i].lng)
+  routeDist = parseFloat(routeDist.toFixed(2))
+
+  // 날짜 (YYYY-MM-DD) — trkpt time 우선, fallback 오늘
+  const firstTimeStr = points.find(p => p.time)?.time
+  const runDate = firstTimeStr
+    ? new Date(firstTimeStr).toISOString().slice(0, 10)
+    : new Date().toISOString().slice(0, 10)
+
+  // 페이스 (분/km): duration(sec)/60 / distance
+  const runPace = duration && routeDist > 0
+    ? parseFloat((duration / 60 / routeDist).toFixed(2)) : 0
+
+  // JSONBin 저장용 요약 엔트리 (좌표 제외)
+  const runEntry = {
+    date:      runDate,
+    distance:  routeDist,
+    pace:      runPace,
+    hr:        avgHR || 0,
+    calories:  0,           // GPX에는 칼로리 정보 없음
+    note:      name || 'GPX',
+  }
+
   return {
-    coords: points,
+    coords: points,         // 세션 전용 — JSONBin에 저장 금지
     meta: {
       name, dateStr, duration,
       elevGain: Math.round(elevGain),
-      avgHR,
+      avgHR, routeDist,
       pointCount: points.length,
       hasElevation: elePts.length > 0,
       hasHR: hrPts.length > 0,
+      runEntry,             // 저장 가능한 요약 데이터
     },
   }
 }
@@ -1035,8 +1062,9 @@ function AddRunModal({ onSave, onClose }) {
 function SettingsTab({ onImportRuns, onGPXLoad }) {
   const [claudeKey,     setClaudeKey]     = useState(()=>localStorage.getItem('claudeKey')||'')
   const [healthPreview, setHealthPreview] = useState(null)   // {runs,total,dateRange,totalKm}
+  const [gpxPreview,    setGpxPreview]    = useState(null)   // {coords,meta}
   const [importing,     setImporting]     = useState(false)
-  const [importResult,  setImportResult]  = useState(null)   // {added,total}
+  const [importResult,  setImportResult]  = useState(null)   // {added,total,type}
   const [fileError,     setFileError]     = useState('')
   const [parsing,       setParsing]       = useState(false)
 
@@ -1061,18 +1089,33 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
     e.target.value = ''
   }
 
-  /* GPX 파일 선택 */
+  /* GPX 파일 선택 — 파싱 후 미리보기 표시 (좌표는 세션 전용) */
   const handleGPXFile = (e) => {
     const file = e.target.files[0]
     if (!file) return
-    setFileError('')
+    setFileError(''); setGpxPreview(null); setImportResult(null)
     const reader = new FileReader()
     reader.onload = (evt) => {
-      try   { const { coords, meta } = parseGPXFile(evt.target.result); onGPXLoad(coords, meta) }
+      try   { setGpxPreview(parseGPXFile(evt.target.result)) }
       catch (err) { setFileError(err.message) }
     }
     reader.readAsText(file)
     e.target.value = ''
+  }
+
+  /* GPX 저장 + 지도 표시 */
+  const confirmGPXSave = async (sendToMap) => {
+    if (!gpxPreview) return
+    setImporting(true)
+    try {
+      let added = 0
+      if (sendToMap) onGPXLoad(gpxPreview.coords, gpxPreview.meta)
+      // 요약 데이터만 JSONBin에 저장 (coords 포함 안 됨)
+      added = await onImportRuns([gpxPreview.meta.runEntry])
+      setImportResult({ added, total: 1, type: 'gpx' })
+      setGpxPreview(null)
+    } catch (err) { setFileError(err.message) }
+    finally { setImporting(false) }
   }
 
   /* 가져오기 확인 */
@@ -1178,20 +1221,91 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
         )}
       </div>
 
-      {/* ── GPX 경로 지도에 표시 ── */}
+      {/* ── GPX 파일 업로드 ── */}
       <div style={{background:C.card,borderRadius:16,padding:16}}>
         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
           <span style={{fontSize:18}}>🗺️</span>
-          <span style={{fontSize:14,fontWeight:900,color:C.white}}>GPX 경로 지도에 표시</span>
+          <span style={{fontSize:14,fontWeight:900,color:C.white}}>GPX 파일 가져오기</span>
         </div>
         <div style={{fontSize:12,color:C.muted,marginBottom:14,lineHeight:1.7}}>
-          내보내기 압축 해제 → <code style={{color:C.lime,fontSize:11}}>workout-routes/</code> 폴더<br/>
-          GPX 파일을 선택하면 지도 탭에서 경로와 통계를 확인합니다.
+          Apple Watch 내보내기 압축 해제 →{' '}
+          <code style={{color:C.lime,fontSize:11}}>workout-routes/*.gpx</code><br/>
+          브라우저에서 파싱 후 <strong style={{color:C.white}}>요약 통계만 JSONBin에 저장</strong>합니다.<br/>
+          GPS 좌표는 저장하지 않고 지도 표시에만 사용됩니다.
         </div>
+
         <input ref={gpxRef} type="file" accept=".gpx" onChange={handleGPXFile} style={{display:'none'}}/>
-        <button onClick={()=>{setFileError('');gpxRef.current?.click()}} style={sBtn()}>
-          📍 GPX 파일 선택 → 지도로 이동
+        <button onClick={()=>{setFileError('');setGpxPreview(null);setImportResult(null);gpxRef.current?.click()}}
+          style={sBtn()}>
+          📍 GPX 파일 선택
         </button>
+
+        {/* GPX 미리보기 */}
+        {gpxPreview && (
+          <div style={{marginTop:14,background:C.card2,borderRadius:12,padding:14}}>
+            <div style={{fontSize:13,fontWeight:900,color:C.lime,marginBottom:12}}>
+              📍 {gpxPreview.meta.name || 'GPX 경로'}
+            </div>
+
+            {/* 요약 통계 (저장될 데이터) */}
+            <div style={{background:C.card,borderRadius:10,padding:'10px 12px',marginBottom:12}}>
+              <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.15em',color:C.lime,textTransform:'uppercase',marginBottom:8}}>
+                JSONBin에 저장될 요약 데이터
+              </div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:14}}>
+                {[
+                  { l:'DATE',   v: gpxPreview.meta.runEntry.date,                      c: C.white  },
+                  { l:'DIST',   v: `${gpxPreview.meta.runEntry.distance} km`,           c: C.lime   },
+                  { l:'PACE',   v: paceToStr(gpxPreview.meta.runEntry.pace) + '/km',    c: '#30D158'},
+                  { l:'HR',     v: gpxPreview.meta.avgHR ? `${gpxPreview.meta.avgHR} bpm` : '—',  c: C.red   },
+                  gpxPreview.meta.duration && { l:'TIME', v: formatDuration(gpxPreview.meta.duration), c: C.orange },
+                  gpxPreview.meta.elevGain > 0 && { l:'ELEV↑', v: `${gpxPreview.meta.elevGain}m`, c: C.blue },
+                ].filter(Boolean).map(s => (
+                  <div key={s.l}>
+                    <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>{s.l}</div>
+                    <div style={{fontSize:14,fontWeight:800,color:s.c}}>{s.v}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 세션 전용 안내 */}
+            <div style={{display:'flex',alignItems:'flex-start',gap:8,background:`${C.blue}15`,borderRadius:10,padding:'8px 12px',marginBottom:12}}>
+              <span style={{fontSize:14,flexShrink:0}}>ℹ️</span>
+              <div style={{fontSize:11,color:C.muted,lineHeight:1.6}}>
+                GPS 좌표 ({gpxPreview.meta.pointCount.toLocaleString()}개) 는 JSONBin에 저장되지 않습니다.
+                지도 표시는 현재 세션에서만 유지됩니다.
+              </div>
+            </div>
+
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={()=>setGpxPreview(null)}
+                style={{...sBtn(C.card, C.muted), flex:1, border:`1px solid ${C.border}`}}>취소</button>
+              <button
+                onClick={()=>{ onGPXLoad(gpxPreview.coords, gpxPreview.meta); setGpxPreview(null) }}
+                style={{...sBtn(C.card2, C.white), flex:1, border:`1px solid ${C.border}`}}>
+                지도만 보기
+              </button>
+              <button onClick={()=>confirmGPXSave(true)} disabled={importing}
+                style={{...sBtn(), flex:2, opacity: importing ? 0.7 : 1}}>
+                {importing ? '저장 중...' : '저장 + 지도'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {importResult?.type === 'gpx' && (
+          <div style={{marginTop:12,background:'#30D15820',border:'1px solid #30D15840',borderRadius:10,padding:'12px 14px'}}>
+            <div style={{fontSize:13,fontWeight:900,color:'#30D158'}}>
+              {importResult.added > 0 ? '✅ 통계 저장 완료' : '⚠️ 이미 존재하는 기록'}
+            </div>
+            <div style={{fontSize:11,color:C.muted,marginTop:4}}>
+              {importResult.added > 0
+                ? 'JSONBin에 요약 데이터가 저장됐습니다. GPS 좌표는 저장되지 않았습니다.'
+                : '같은 날짜·거리 기록이 이미 존재합니다.'}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Claude API Key ── */}
