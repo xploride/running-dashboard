@@ -25,7 +25,6 @@ const TABS = [
   { id: 1, label: 'LOG',   icon: '≡' },
   { id: 2, label: 'MAP',   icon: '◎' },
   { id: 3, label: 'STATS', icon: '▦' },
-  { id: 4, label: 'AI',    icon: '✦' },
 ]
 
 const PACE_ZONES = [
@@ -39,7 +38,6 @@ const PACE_ZONES = [
 const BIN_ID      = '6a212290da38895dfe84f187'
 const API_KEY     = '$2a$10$S4L4AI6Ixu.mcfT/xS3q4.37HRowJYcmydaG/Ib41bUflr2jIC.lS'
 const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`
-const CLAUDE_API  = 'https://api.anthropic.com/v1/messages'
 const ANIM_SPEEDS = [{ label:'1×',value:1},{label:'3×',value:3},{label:'10×',value:10},{label:'30×',value:30}]
 const ANIM_SECS_1X = 20
 const GRAD_SEGS    = 80
@@ -630,53 +628,83 @@ function Chip({ color, label, val }) {
    STATS TAB
 ───────────────────────────────────────── */
 function StatsTab({ runs }) {
+  const [period, setPeriod] = useState('total') // 'total' | 'monthly' | 'weekly'
   const now = new Date()
-  const weekAgo= new Date(now-7*86400000).toISOString().slice(0,10)
-  const weekRuns = runs.filter(r=>r.date>=weekAgo)
-  const paceRuns = runs.filter(r=>r.pace>0)
-  const avgPace  = paceRuns.length ? paceRuns.reduce((s,r)=>s+r.pace,0)/paceRuns.length : 0
-  const totalKm  = runs.reduce((s,r)=>s+r.distance,0)
-  const totalCal = runs.reduce((s,r)=>s+r.calories,0)
 
-  // 페이스 구간 분석
-  const zoneCounts = PACE_ZONES.map(z=>({
-    ...z,
-    count: paceRuns.filter(r=>r.pace>=z.min&&r.pace<z.max).length
-  }))
-  const maxZoneCount = Math.max(...zoneCounts.map(z=>z.count),1)
+  const weekAgoStr   = new Date(now - 7*86400000).toISOString().slice(0,10)
+  const monthStartStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`
 
-  // 최근 8주 주간 볼륨
-  const weeklyData = Array.from({length:8},(_,i)=>{
-    const end = new Date(now); end.setDate(end.getDate()-i*7)
-    const start= new Date(end); start.setDate(start.getDate()-6)
-    const es=end.toISOString().slice(0,10), ss=start.toISOString().slice(0,10)
-    const km=runs.filter(r=>r.date>=ss&&r.date<=es).reduce((s,r)=>s+r.distance,0)
-    return { week:`-${i}W`, km:parseFloat(km.toFixed(1)) }
-  }).reverse()
+  const filtered = period === 'weekly'  ? runs.filter(r => r.date >= weekAgoStr)
+                 : period === 'monthly' ? runs.filter(r => r.date >= monthStartStr)
+                 : runs
 
-  // PR 계산
-  const maxSingle = runs.reduce((max,r)=>r.distance>max?r.distance:max,0)
+  const paceRuns  = filtered.filter(r => r.pace > 0)
+  const avgPace   = paceRuns.length ? paceRuns.reduce((s,r) => s+r.pace, 0) / paceRuns.length : 0
+  const totalKm   = filtered.reduce((s,r) => s+r.distance, 0)
+  const maxSingle = filtered.reduce((max,r) => r.distance > max ? r.distance : max, 0)
+
+  // 차트 데이터
+  const chartData = period === 'weekly'
+    ? Array.from({length:7}, (_, i) => {
+        const d = new Date(now); d.setDate(d.getDate() - (6-i))
+        const dStr = d.toISOString().slice(0,10)
+        const km = runs.filter(r => r.date === dStr).reduce((s,r) => s+r.distance, 0)
+        return { week: ['일','월','화','수','목','금','토'][d.getDay()], km: parseFloat(km.toFixed(1)) }
+      })
+    : period === 'monthly'
+    ? Array.from({length: new Date(now.getFullYear(), now.getMonth()+1, 0).getDate()}, (_, i) => {
+        const day  = i + 1
+        const dStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+        const km   = runs.filter(r => r.date === dStr).reduce((s,r) => s+r.distance, 0)
+        return { week: String(day), km: parseFloat(km.toFixed(1)) }
+      })
+    : Array.from({length:8}, (_, i) => {
+        const end = new Date(now); end.setDate(end.getDate()-i*7)
+        const start = new Date(end); start.setDate(start.getDate()-6)
+        const es = end.toISOString().slice(0,10), ss = start.toISOString().slice(0,10)
+        const km = runs.filter(r => r.date>=ss && r.date<=es).reduce((s,r) => s+r.distance, 0)
+        return { week: `-${i}W`, km: parseFloat(km.toFixed(1)) }
+      }).reverse()
+
+  const zoneCounts   = PACE_ZONES.map(z => ({ ...z, count: paceRuns.filter(r => r.pace>=z.min && r.pace<z.max).length }))
+  const maxZoneCount = Math.max(...zoneCounts.map(z => z.count), 1)
+
+  const statLabels = { total: ['TOTAL DIST','TOTAL RUNS'], monthly: ['MONTH DIST','MONTH RUNS'], weekly: ['WEEK DIST','WEEK RUNS'] }
+  const [distLabel, runsLabel] = statLabels[period]
+  const chartLabel = period === 'total' ? 'WEEKLY VOLUME' : 'DAILY VOLUME'
 
   return (
     <div style={{display:'flex',flexDirection:'column',gap:20,padding:'0 20px'}}>
-      {/* 전체 요약 */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-        <BigStatCard label="TOTAL DISTANCE" val={`${totalKm.toFixed(0)}`} unit="KM" color={C.lime}/>
-        <BigStatCard label="TOTAL RUNS" val={`${runs.length}`} unit="RUNS" color={C.orange}/>
-        <BigStatCard label="AVG PACE" val={paceToStr(avgPace)} unit="/KM" color="#30D158"/>
-        <BigStatCard label="LONGEST RUN" val={`${maxSingle.toFixed(1)}`} unit="KM" color={C.blue}/>
+      {/* 서브탭 */}
+      <div style={{display:'flex',background:C.card,borderRadius:14,padding:4,gap:4}}>
+        {[['total','TOTAL'],['monthly','MONTHLY'],['weekly','WEEKLY']].map(([p,label]) => (
+          <button key={p} onClick={() => setPeriod(p)} style={{
+            flex:1, background: period===p ? C.lime : 'transparent', border:'none',
+            borderRadius:10, padding:'10px 4px', color: period===p ? '#000' : C.muted,
+            fontSize:13, fontWeight:900, letterSpacing:'0.06em', textTransform:'uppercase',
+            cursor:'pointer', WebkitTapHighlightColor:'transparent', transition:'all .15s',
+          }}>{label}</button>
+        ))}
       </div>
 
-      {/* 주간 볼륨 차트 */}
+      {/* 요약 */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+        <BigStatCard label={distLabel} val={totalKm.toFixed(1)} unit="KM" color={C.lime}/>
+        <BigStatCard label={runsLabel} val={`${filtered.length}`} unit="RUNS" color={C.orange}/>
+        <BigStatCard label="AVG PACE" val={paceToStr(avgPace)} unit="/KM" color="#30D158"/>
+        <BigStatCard label="LONGEST RUN" val={maxSingle.toFixed(1)} unit="KM" color={C.blue}/>
+      </div>
+
+      {/* 볼륨 차트 */}
       <div style={{background:C.card,borderRadius:16,padding:'16px 14px'}}>
-        <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:14}}>WEEKLY VOLUME</div>
+        <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:14}}>{chartLabel}</div>
         <ResponsiveContainer width="100%" height={120}>
-          <BarChart data={weeklyData} margin={{left:-28,right:0,top:4,bottom:0}}>
+          <BarChart data={chartData} margin={{left:-28,right:0,top:4,bottom:0}}>
             <XAxis dataKey="week" tick={{fill:C.muted,fontSize:9,fontWeight:700}} axisLine={false} tickLine={false}/>
             <YAxis tick={{fill:C.muted,fontSize:9}} axisLine={false} tickLine={false}/>
             <Tooltip contentStyle={{background:C.card2,border:`1px solid ${C.border}`,borderRadius:10,fontSize:12}} labelStyle={{color:C.white}} formatter={v=>[`${v} km`]}/>
             <Bar dataKey="km" radius={[6,6,0,0]}>
-              {weeklyData.map((d,i)=><Cell key={i} fill={i===weeklyData.length-1?C.lime:C.dim}/>)}
+              {chartData.map((_,i) => <Cell key={i} fill={i===chartData.length-1 ? C.lime : C.dim}/>)}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -685,7 +713,7 @@ function StatsTab({ runs }) {
       {/* 페이스 구간 */}
       <div style={{background:C.card,borderRadius:16,padding:'16px'}}>
         <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:16}}>PACE ZONES</div>
-        {zoneCounts.map((z,i)=>(
+        {zoneCounts.map((z,i) => (
           <div key={i} style={{marginBottom:12}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:5}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -702,13 +730,19 @@ function StatsTab({ runs }) {
         ))}
       </div>
 
-      {/* 월간 히트맵 */}
-      <div style={{background:C.card,borderRadius:16,padding:'16px'}}>
-        <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:14}}>ACTIVITY HEATMAP</div>
-        <MonthHeatmap runs={runs} monthOffset={0}/>
-        <div style={{height:1,background:C.border,margin:'16px 0'}}/>
-        <MonthHeatmap runs={runs} monthOffset={1}/>
-      </div>
+      {/* 히트맵 — WEEKLY는 생략 */}
+      {period !== 'weekly' && (
+        <div style={{background:C.card,borderRadius:16,padding:'16px'}}>
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:14}}>ACTIVITY HEATMAP</div>
+          <MonthHeatmap runs={runs} monthOffset={0}/>
+          {period === 'total' && (
+            <>
+              <div style={{height:1,background:C.border,margin:'16px 0'}}/>
+              <MonthHeatmap runs={runs} monthOffset={1}/>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -719,91 +753,6 @@ function BigStatCard({ label, val, unit, color }) {
       <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.18em',color:C.muted,textTransform:'uppercase',marginBottom:4}}>{label}</div>
       <div style={{fontSize:30,fontWeight:900,letterSpacing:'-1.5px',color,lineHeight:1}}>{val}</div>
       <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:'0.08em',marginTop:2}}>{unit}</div>
-    </div>
-  )
-}
-
-/* ─────────────────────────────────────────
-   AI TAB
-───────────────────────────────────────── */
-function AITab({ runs }) {
-  const [input,      setInput]      = useState('')
-  const [messages,   setMessages]   = useState([])
-  const [loading,    setLoading]    = useState(false)
-  const [claudeKey,  setClaudeKey]  = useState(()=>localStorage.getItem('claudeKey')||'')
-  const endRef = useRef(null)
-
-  useEffect(()=>{ endRef.current?.scrollIntoView({behavior:'smooth'}) },[messages,loading])
-
-  const now=new Date(), weekAgo=new Date(now-7*86400000).toISOString().slice(0,10)
-  const weekRuns=runs.filter(r=>r.date>=weekAgo)
-  const weekKm=weekRuns.reduce((s,r)=>s+r.distance,0).toFixed(1)
-  const paceRuns=runs.filter(r=>r.pace>0)
-  const avgPace=paceRuns.length?paceRuns.reduce((s,r)=>s+r.pace,0)/paceRuns.length:0
-
-  const saveKey=k=>{ setClaudeKey(k); localStorage.setItem('claudeKey',k) }
-
-  const ask=async()=>{
-    if(!input.trim()||!claudeKey) return
-    const msg=input.trim()
-    const next=[...messages,{role:'user',content:msg}]
-    setMessages(next); setInput(''); setLoading(true)
-    const ctx=`이번주 ${weekKm}km(${weekRuns.length}회), 총 ${runs.length}회, 평균 페이스 ${paceToStr(avgPace)}/km`
-    try {
-      const res=await fetch(CLAUDE_API,{
-        method:'POST',
-        headers:{'Content-Type':'application/json','x-api-key':claudeKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-        body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1024,system:`전문 러닝 코치. 사용자 데이터: ${ctx}. 한국어로 간결하고 실용적인 조언.`,messages:next})
-      })
-      const d=await res.json()
-      setMessages(m=>[...m,{role:'assistant',content:d.content?.[0]?.text||'응답 없음'}])
-    } catch { setMessages(m=>[...m,{role:'assistant',content:'오류. API 키를 확인해주세요.'}]) }
-    finally { setLoading(false) }
-  }
-
-  return (
-    <div style={{display:'flex',flexDirection:'column',height:'calc(100dvh - 136px)',padding:'0 20px'}}>
-      {!claudeKey&&(
-        <div style={{background:C.card,borderRadius:16,padding:16,marginBottom:12}}>
-          <div style={{fontSize:10,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase',marginBottom:8}}>CLAUDE API KEY</div>
-          <input type="password" placeholder="sk-ant-..." onChange={e=>saveKey(e.target.value)} style={inp}/>
-        </div>
-      )}
-      <div style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',gap:10}}>
-        {messages.length===0&&(
-          <div style={{textAlign:'center',padding:'32px 0',color:C.muted}}>
-            <div style={{fontSize:40,marginBottom:12}}>✦</div>
-            <div style={{fontSize:20,fontWeight:900,color:C.white,letterSpacing:'-0.5px',marginBottom:6}}>AI COACH</div>
-            <div style={{fontSize:13,marginBottom:20}}>러닝 데이터 기반 맞춤 조언</div>
-            <div style={{display:'flex',flexDirection:'column',gap:8}}>
-              {['이번주 훈련 평가해줘','페이스 향상 방법 알려줘','다음 훈련 계획 세워줘'].map(q=>(
-                <button key={q} onClick={()=>setInput(q)} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:50,padding:'11px 18px',color:C.lime,fontSize:13,fontWeight:700,cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>{q}</button>
-              ))}
-            </div>
-          </div>
-        )}
-        {messages.map((m,i)=>(
-          <div key={i} style={{
-            alignSelf:m.role==='user'?'flex-end':'flex-start',
-            maxWidth:'86%',
-            background:m.role==='user'?C.lime:'#1A1A1A',
-            borderRadius:m.role==='user'?'18px 18px 4px 18px':'18px 18px 18px 4px',
-            padding:'12px 16px',
-            fontSize:14,lineHeight:1.65,whiteSpace:'pre-wrap',
-            color:m.role==='user'?'#000':C.white,fontWeight:m.role==='user'?700:400,
-          }}>{m.content}</div>
-        ))}
-        {loading&&<div style={{alignSelf:'flex-start',background:'#1A1A1A',borderRadius:'18px 18px 18px 4px',padding:'12px 16px',color:C.muted,fontSize:14}}>생각 중...</div>}
-        <div ref={endRef}/>
-      </div>
-      <div style={{display:'flex',gap:8,paddingTop:10,paddingBottom:4}}>
-        <input value={input} onChange={e=>setInput(e.target.value)}
-          onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask()}}}
-          placeholder={claudeKey?'질문 입력...':'설정에서 API 키를 입력하세요'}
-          style={{...inp,flex:1,fontSize:15}} disabled={!claudeKey}/>
-        <button onClick={ask} disabled={!claudeKey||!input.trim()||loading}
-          style={{background:C.lime,border:'none',borderRadius:12,width:48,height:48,color:'#000',fontSize:20,fontWeight:900,cursor:'pointer',opacity:(!claudeKey||!input.trim()||loading)?0.4:1,flexShrink:0,WebkitTapHighlightColor:'transparent'}}>↑</button>
-      </div>
     </div>
   )
 }
@@ -1488,7 +1437,6 @@ export default function App() {
             {tab===1&&<RecordsTab runs={runs} onAdd={()=>setShowAdd(true)} onDelete={handleDelete} gpxStore={gpxStore} onViewRoute={handleViewRoute}/>}
             <div style={{display:tab===2?'block':'none'}}><MapTab active={tab===2} uploadedGPS={uploadedGPS} gpxMeta={gpxMeta} onUploadConsumed={()=>setUploadedGPS(null)} autoPlay={autoPlay} onAutoPlayDone={()=>setAutoPlay(false)}/></div>
             {tab===3&&<StatsTab runs={runs}/>}
-            {tab===4&&<AITab runs={runs}/>}
             {tab===5&&<SettingsTab onImportRuns={handleImportRuns} onGPXLoad={handleGPXFromSettings}/>}
           </>
         )}
@@ -1497,15 +1445,15 @@ export default function App() {
       {/* 하단 탭 바 */}
       <div style={{position:'fixed',bottom:0,left:0,right:0,zIndex:100,background:'rgba(0,0,0,0.95)',backdropFilter:'blur(20px)',borderTop:`1px solid ${C.border}`,display:'flex',paddingBottom:'env(safe-area-inset-bottom)'}}>
         {TABS.map(t=>(
-          <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,background:'none',border:'none',cursor:'pointer',padding:'10px 4px 8px',display:'flex',flexDirection:'column',alignItems:'center',gap:3,WebkitTapHighlightColor:'transparent',touchAction:'manipulation',minHeight:52,position:'relative'}}>
-            <div style={{width:6,height:6,borderRadius:'50%',background:tab===t.id?C.lime:'transparent',marginBottom:1,transition:'all .2s'}}/>
-            <span style={{fontSize:9,fontWeight:800,letterSpacing:'0.12em',color:tab===t.id?C.lime:C.muted,textTransform:'uppercase'}}>{t.label}</span>
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,background:'none',border:'none',cursor:'pointer',padding:'10px 4px 8px',display:'flex',flexDirection:'column',alignItems:'center',gap:3,WebkitTapHighlightColor:'transparent',touchAction:'manipulation',minHeight:56,position:'relative'}}>
+            <div style={{width:6,height:6,borderRadius:'50%',background:tab===t.id?C.lime:'transparent',marginBottom:2,transition:'all .2s'}}/>
+            <span style={{fontSize:14,fontWeight:800,letterSpacing:'0.06em',color:tab===t.id?C.lime:C.muted,textTransform:'uppercase'}}>{t.label}</span>
           </button>
         ))}
-        {/* 설정 탭 — 작게 */}
-        <button onClick={()=>setTab(5)} style={{flex:0.6,background:'none',border:'none',cursor:'pointer',padding:'10px 4px 8px',display:'flex',flexDirection:'column',alignItems:'center',gap:3,WebkitTapHighlightColor:'transparent',touchAction:'manipulation',minHeight:52,position:'relative'}}>
-          <div style={{width:6,height:6,borderRadius:'50%',background:tab===5?C.lime:'transparent',marginBottom:1}}/>
-          <span style={{fontSize:9,fontWeight:800,letterSpacing:'0.12em',color:tab===5?C.lime:C.muted,textTransform:'uppercase'}}>SET</span>
+        {/* 설정 탭 */}
+        <button onClick={()=>setTab(5)} style={{flex:1,background:'none',border:'none',cursor:'pointer',padding:'10px 4px 8px',display:'flex',flexDirection:'column',alignItems:'center',gap:3,WebkitTapHighlightColor:'transparent',touchAction:'manipulation',minHeight:56,position:'relative'}}>
+          <div style={{width:6,height:6,borderRadius:'50%',background:tab===5?C.lime:'transparent',marginBottom:2}}/>
+          <span style={{fontSize:14,fontWeight:800,letterSpacing:'0.06em',color:tab===5?C.lime:C.muted,textTransform:'uppercase'}}>SET</span>
         </button>
       </div>
 
