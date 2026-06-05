@@ -1,23 +1,25 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts'
 
 /* ── 상수 ── */
-const BIN_ID    = '6a212290da38895dfe84f187'
-const API_KEY   = '$2a$10$S4L4AI6Ixu.mcfT/xS3q4.37HRowJYcmydaG/Ib41bUflr2jIC.lS'
+const BIN_ID      = '6a212290da38895dfe84f187'
+const API_KEY     = '$2a$10$S4L4AI6Ixu.mcfT/xS3q4.37HRowJYcmydaG/Ib41bUflr2jIC.lS'
 const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`
 const CLAUDE_API  = 'https://api.anthropic.com/v1/messages'
-const GOALS = { weeklyKm: 30, monthlyKm: 120, targetPace: 6.0 }
+const GOALS       = { weeklyKm: 30, monthlyKm: 120, targetPace: 6.0 }
+
 const ANIM_SPEEDS = [
   { label: '1×',  value: 1  },
   { label: '3×',  value: 3  },
   { label: '10×', value: 10 },
   { label: '30×', value: 30 },
 ]
-const ANIM_SECS_1X   = 20   // 1× 속도 기준 총 재생 시간 (초)
-const POLYLINE_MS    = 66   // 폴리라인 갱신 주기 (~15fps)
+const ANIM_SECS_1X = 20
 
 const TABS = [
   { id: 0, label: '홈',   icon: '🏠' },
@@ -139,94 +141,73 @@ function FormField({ label, children }) {
   )
 }
 
-/* ════════════════ 카카오맵 탭 ════════════════ */
-function MapTab({ kakaoMapsKey, active }) {
-  const mapRef         = useRef(null)
-  const mapObj         = useRef(null)
-  const bgLine         = useRef(null)
-  const animLine       = useRef(null)
-  const runnerOverlay  = useRef(null)
-  const startMarker    = useRef(null)
-  const endMarker      = useRef(null)
-  const rafId          = useRef(null)
-  const progressRef    = useRef(0)
-  const playingRef     = useRef(false)
-  const coordsRef      = useRef([])
-  const lastPolylineTs = useRef(0)
+/* ════════════════ 지도 탭 (Leaflet + OpenStreetMap) ════════════════ */
+function MapTab({ active }) {
+  const mapRef      = useRef(null)
+  const mapObj      = useRef(null)
+  const bgLine      = useRef(null)
+  const animLine    = useRef(null)
+  const runnerMark  = useRef(null)
+  const rafId       = useRef(null)
+  const progressRef = useRef(0)
+  const playingRef  = useRef(false)
+  const coordsRef   = useRef([])
 
-  const [activated,  setActivated]  = useState(false)
-  const [mapLoaded,  setMapLoaded]  = useState(false)
-  const [mapError,   setMapError]   = useState('')
-  const [gpsInput,   setGpsInput]   = useState('')
-  const [coords,     setCoords]     = useState([])
-  const [routeKm,    setRouteKm]    = useState(0)
-  const [playing,    setPlaying]    = useState(false)
-  const [progress,   setProgress]   = useState(0)
-  const [speedIdx,   setSpeedIdx]   = useState(1)
-  const [showPanel,  setShowPanel]  = useState(true)
-  const [parseErr,   setParseErr]   = useState('')
+  const [activated, setActivated] = useState(false)
+  const [gpsInput,  setGpsInput]  = useState('')
+  const [coords,    setCoords]    = useState([])
+  const [routeKm,   setRouteKm]   = useState(0)
+  const [playing,   setPlaying]   = useState(false)
+  const [progress,  setProgress]  = useState(0)
+  const [speedIdx,  setSpeedIdx]  = useState(1)
+  const [showPanel, setShowPanel] = useState(true)
+  const [parseErr,  setParseErr]  = useState('')
 
   // 처음 방문 시 활성화
   useEffect(() => { if (active && !activated) setActivated(true) }, [active, activated])
 
-  // Kakao Maps 스크립트 로드
+  // 지도 초기화 (한 번만)
   useEffect(() => {
-    if (!kakaoMapsKey || !activated) return
-    if (window.kakao?.maps) { setMapLoaded(true); return }
+    if (!activated || !mapRef.current || mapObj.current) return
 
-    // 이미 삽입된 스크립트가 있으면 스킵
-    if (document.getElementById('kakao-maps-sdk')) return
-
-    const script = document.createElement('script')
-    script.id  = 'kakao-maps-sdk'
-    script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${kakaoMapsKey}&autoload=false`
-    script.onload  = () => window.kakao.maps.load(() => { setMapLoaded(true); setMapError('') })
-    script.onerror = () => setMapError('Kakao Maps 로드 실패. API 키와 플랫폼 도메인 설정을 확인하세요.')
-    document.head.appendChild(script)
-  }, [kakaoMapsKey, activated])
-
-  // 지도 객체 초기화
-  useEffect(() => {
-    if (!mapLoaded || !mapRef.current || mapObj.current) return
-    mapObj.current = new window.kakao.maps.Map(mapRef.current, {
-      center: new window.kakao.maps.LatLng(37.5665, 126.9780),
-      level: 6,
+    const map = L.map(mapRef.current, {
+      center: [37.5665, 126.9780],
+      zoom: 13,
+      zoomControl: true,
     })
-  }, [mapLoaded])
+
+    // CartoDB Dark Matter — API 키·도메인 등록 불필요
+    L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+      {
+        attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a> © <a href="https://carto.com">CARTO</a>',
+        maxZoom: 19,
+      }
+    ).addTo(map)
+
+    mapObj.current = map
+  }, [activated])
+
+  // 탭 전환 시 지도 크기 재계산 (display:none 해제 후 필요)
+  useEffect(() => {
+    if (active && mapObj.current) {
+      setTimeout(() => mapObj.current.invalidateSize(), 50)
+    }
+  }, [active])
 
   useEffect(() => { coordsRef.current = coords }, [coords])
 
-  /* 지도 오브젝트 정리 */
-  const clearMapObjects = () => {
-    bgLine.current?.setMap(null);        bgLine.current = null
-    animLine.current?.setMap(null);      animLine.current = null
-    runnerOverlay.current?.setMap(null); runnerOverlay.current = null
-    startMarker.current?.setMap(null);   startMarker.current = null
-    endMarker.current?.setMap(null);     endMarker.current = null
+  /* 지도 레이어 정리 */
+  const clearLayers = () => {
+    bgLine.current?.remove();     bgLine.current = null
+    animLine.current?.remove();   animLine.current = null
+    runnerMark.current?.remove(); runnerMark.current = null
   }
 
-  /* 폴리라인 생성 헬퍼 */
-  const makeLine = (pts, color, opacity = 1) => {
-    const line = new window.kakao.maps.Polyline({
-      path: pts.map(c => new window.kakao.maps.LatLng(c.lat, c.lng)),
-      strokeWeight: 5, strokeColor: color,
-      strokeOpacity: opacity, strokeStyle: 'solid',
-    })
-    line.setMap(mapObj.current)
-    return line
-  }
-
-  /* 커스텀 오버레이 (러너 이모지) */
-  const makeRunnerOverlay = (pos) => {
-    const el = document.createElement('div')
-    el.style.cssText = 'font-size:28px;line-height:1;transform:translate(-50%,-80%);pointer-events:none;'
-    el.textContent = '🏃'
-    const overlay = new window.kakao.maps.CustomOverlay({
-      position: pos, content: el, zIndex: 10,
-    })
-    overlay.setMap(mapObj.current)
-    return overlay
-  }
+  /* 커스텀 아이콘 생성 헬퍼 */
+  const divIcon = (html, size = 32) => L.divIcon({
+    html, className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+  })
 
   /* 경로 불러오기 */
   const loadRoute = () => {
@@ -240,56 +221,43 @@ function MapTab({ kakaoMapsKey, active }) {
       setCoords(pts)
       coordsRef.current = pts
 
-      if (!mapObj.current) { setShowPanel(false); return }
-
       cancelAnimationFrame(rafId.current)
       playingRef.current = false
       progressRef.current = 0
-      lastPolylineTs.current = 0
       setPlaying(false); setProgress(0)
-      clearMapObjects()
+      clearLayers()
 
       const map = mapObj.current
-      const K = window.kakao.maps
+      const lls = pts.map(p => [p.lat, p.lng])
 
-      // 배경 경로 (흐리게)
-      bgLine.current = makeLine(pts, '#6b7280', 0.4)
+      // 배경 경로 (흐린 회색)
+      bgLine.current = L.polyline(lls, {
+        color: '#4b5563', weight: 5, opacity: 0.45,
+      }).addTo(map)
 
       // 애니메이션 경로 (처음엔 첫 점만)
-      animLine.current = makeLine([pts[0], pts[0]], '#7c3aed', 1)
+      animLine.current = L.polyline([lls[0]], {
+        color: '#7c3aed', weight: 5, opacity: 1,
+      }).addTo(map)
 
-      // 출발 마커 (S)
-      const sImg = new K.MarkerImage(
-        'https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/markerStar.png',
-        new K.Size(24, 35)
-      )
-      startMarker.current = new K.Marker({
-        position: new K.LatLng(pts[0].lat, pts[0].lng), map, image: sImg,
-      })
+      // 출발 마커
+      L.marker(lls[0], {
+        icon: divIcon('<div style="background:#34d399;color:#fff;font-size:10px;font-weight:700;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4)">S</div>', 24),
+      }).addTo(map)
 
-      // 도착 마커 (F) — 기본 마커
-      endMarker.current = new K.Marker({
-        position: new K.LatLng(pts[pts.length - 1].lat, pts[pts.length - 1].lng), map,
-      })
+      // 도착 마커
+      L.marker(lls[lls.length - 1], {
+        icon: divIcon('<div style="background:#f87171;color:#fff;font-size:10px;font-weight:700;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4)">F</div>', 24),
+      }).addTo(map)
 
-      // 출발/도착 라벨
-      const makeLabel = (pos, text, bg) => {
-        const d = document.createElement('div')
-        d.style.cssText = `background:${bg};color:#fff;font-size:11px;font-weight:700;padding:3px 7px;border-radius:10px;transform:translate(-50%,-140%);white-space:nowrap;`
-        d.textContent = text
-        new K.CustomOverlay({ position: pos, content: d, zIndex: 5 }).setMap(map)
-      }
-      makeLabel(new K.LatLng(pts[0].lat, pts[0].lng), '출발', '#34d399')
-      makeLabel(new K.LatLng(pts[pts.length-1].lat, pts[pts.length-1].lng), '도착', '#f87171')
+      // 러너 마커
+      runnerMark.current = L.marker(lls[0], {
+        icon: divIcon('<div style="font-size:26px;line-height:1;filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))">🏃</div>', 34),
+        zIndexOffset: 1000,
+      }).addTo(map)
 
-      // 러너 오버레이
-      runnerOverlay.current = makeRunnerOverlay(new K.LatLng(pts[0].lat, pts[0].lng))
-
-      // 지도 범위 맞춤
-      const bounds = new K.LatLngBounds()
-      pts.forEach(p => bounds.extend(new K.LatLng(p.lat, p.lng)))
-      map.setBounds(bounds)
-
+      // 경계 맞춤
+      map.fitBounds(L.latLngBounds(lls), { padding: [40, 40] })
       setShowPanel(false)
     } catch (e) {
       setParseErr(e.message)
@@ -314,30 +282,20 @@ function MapTab({ kakaoMapsKey, active }) {
         progressRef.current + (speed * dt) / (ANIM_SECS_1X * 1000), 1
       )
       const rawIdx = progressRef.current * (total - 1)
-      const fi    = Math.floor(rawIdx)
-      const frac  = rawIdx - fi
+      const fi = Math.floor(rawIdx), frac = rawIdx - fi
 
-      // 러너 위치 (60fps 매끄럽게)
-      if (runnerOverlay.current && fi < total - 1) {
+      // 러너 위치 보간 (60fps)
+      if (fi < total - 1) {
         const a = coordsRef.current[fi], b = coordsRef.current[fi + 1]
-        runnerOverlay.current.setPosition(new window.kakao.maps.LatLng(
-          a.lat + (b.lat - a.lat) * frac,
-          a.lng + (b.lng - a.lng) * frac,
-        ))
+        const lat = a.lat + (b.lat - a.lat) * frac
+        const lng = a.lng + (b.lng - a.lng) * frac
+        runnerMark.current?.setLatLng([lat, lng])
       }
 
-      // 폴리라인 갱신 (~15fps 스로틀)
-      if (ts - lastPolylineTs.current > POLYLINE_MS) {
-        lastPolylineTs.current = ts
-        const slice = coordsRef.current.slice(0, fi + 2)
-        const path  = slice.map(c => new window.kakao.maps.LatLng(c.lat, c.lng))
-        if (animLine.current) animLine.current.setMap(null)
-        animLine.current = new window.kakao.maps.Polyline({
-          path, strokeWeight: 5, strokeColor: '#7c3aed',
-          strokeOpacity: 1, strokeStyle: 'solid',
-        })
-        animLine.current.setMap(mapObj.current)
-      }
+      // 폴리라인 성장 — Leaflet setLatLngs는 효율적이라 매 프레임 OK
+      animLine.current?.setLatLngs(
+        coordsRef.current.slice(0, fi + 2).map(p => [p.lat, p.lng])
+      )
 
       setProgress(progressRef.current)
 
@@ -355,16 +313,10 @@ function MapTab({ kakaoMapsKey, active }) {
   const reset = () => {
     pause()
     progressRef.current = 0; setProgress(0)
-    lastPolylineTs.current = 0
     const c = coordsRef.current
-    if (!c.length || !mapObj.current) return
-
-    // 폴리라인 리셋
-    if (animLine.current) animLine.current.setMap(null)
-    animLine.current = makeLine([c[0], c[0]], '#7c3aed', 1)
-
-    // 러너 위치 리셋
-    runnerOverlay.current?.setPosition(new window.kakao.maps.LatLng(c[0].lat, c[0].lng))
+    if (!c.length) return
+    animLine.current?.setLatLngs([[c[0].lat, c[0].lng]])
+    runnerMark.current?.setLatLng([c[0].lat, c[0].lng])
   }
 
   /* 진행 바 스크럽 */
@@ -372,158 +324,112 @@ function MapTab({ kakaoMapsKey, active }) {
     const rect = e.currentTarget.getBoundingClientRect()
     const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
     progressRef.current = pct; setProgress(pct)
-
     const total = coordsRef.current.length
-    if (!total || !mapObj.current) return
+    if (!total) return
     const fi = Math.min(Math.floor(pct * (total - 1)), total - 2)
-
-    // 폴리라인 업데이트
-    const path = coordsRef.current.slice(0, fi + 2).map(c => new window.kakao.maps.LatLng(c.lat, c.lng))
-    if (animLine.current) animLine.current.setMap(null)
-    animLine.current = new window.kakao.maps.Polyline({
-      path, strokeWeight: 5, strokeColor: '#7c3aed', strokeOpacity: 1, strokeStyle: 'solid',
-    })
-    animLine.current.setMap(mapObj.current)
-
-    runnerOverlay.current?.setPosition(new window.kakao.maps.LatLng(
-      coordsRef.current[fi].lat, coordsRef.current[fi].lng
-    ))
+    animLine.current?.setLatLngs(coordsRef.current.slice(0, fi + 2).map(p => [p.lat, p.lng]))
+    runnerMark.current?.setLatLng([coordsRef.current[fi].lat, coordsRef.current[fi].lng])
   }
 
   const pctDone = Math.round(progress * 100)
   const kmDone  = parseFloat((progress * routeKm).toFixed(2))
 
-  if (!activated) return null
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: 'calc(100dvh - 136px)' }}>
-      {!kakaoMapsKey ? (
-        <div style={{ background: '#1f2028', borderRadius: 14, padding: 28, textAlign: 'center', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ fontSize: 40, marginBottom: 14 }}>🗺️</div>
-          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 10 }}>Kakao Maps API 키 필요</div>
-          <div style={{ color: '#9ca3af', fontSize: 13, lineHeight: 1.8 }}>
-            설정 탭에서 Kakao Maps JavaScript API 키를 입력하면<br />GPS 경로 시각화가 활성화됩니다.
+      {/* 지도 */}
+      <div style={{ flex: 1, position: 'relative', borderRadius: 14, overflow: 'hidden', minHeight: 220 }}>
+        <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
+
+        {/* 진행 오버레이 */}
+        {coords.length > 0 && (
+          <div style={{ position: 'absolute', top: 10, left: 10, background: 'rgba(22,23,29,0.85)', borderRadius: 10, padding: '7px 12px', fontSize: 13, backdropFilter: 'blur(4px)', zIndex: 1000 }}>
+            <span style={{ color: '#a78bfa', fontWeight: 700 }}>{kmDone}</span>
+            <span style={{ color: '#9ca3af' }}> / {routeKm} km</span>
+            <span style={{ color: '#6b7280', marginLeft: 8 }}>{pctDone}%</span>
           </div>
-          <a href="https://developers.kakao.com/console/app"
-            target="_blank" rel="noreferrer"
-            style={{ color: '#FFCD00', fontSize: 13, marginTop: 14, display: 'inline-block' }}>
-            Kakao Developers에서 앱 키 발급하기 →
-          </a>
-          <div style={{ color: '#6b7280', fontSize: 11, marginTop: 10, lineHeight: 1.6 }}>
-            앱 생성 → 플랫폼 → Web → 사이트 도메인 등록 필요
+        )}
+
+        {/* 경로 입력 토글 */}
+        <button onClick={() => setShowPanel(v => !v)}
+          style={{ position: 'absolute', top: 10, right: 10, background: 'rgba(22,23,29,0.85)', border: '1px solid #4b5563', borderRadius: 10, padding: '7px 12px', color: '#c084fc', fontSize: 13, cursor: 'pointer', backdropFilter: 'blur(4px)', zIndex: 1000, WebkitTapHighlightColor: 'transparent' }}>
+          {showPanel ? '✕ 닫기' : '📍 경로 입력'}
+        </button>
+      </div>
+
+      {/* GPS 입력 패널 */}
+      {showPanel && (
+        <div style={{ background: '#1f2028', borderRadius: 14, padding: 14 }}>
+          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>
+            GPS 좌표 입력 — <code style={{ color: '#6b7280', fontSize: 11 }}>[[lat,lng], ...]</code> 또는 <code style={{ color: '#6b7280', fontSize: 11 }}>[{'{'}lat,lng{'}'},...]</code>
+          </div>
+          <textarea
+            value={gpsInput}
+            onChange={e => { setGpsInput(e.target.value); setParseErr('') }}
+            rows={3}
+            placeholder="[[37.5195, 126.9393], [37.5199, 126.9400], ...]"
+            style={{ ...inputStyle, resize: 'vertical', fontSize: 12, fontFamily: 'monospace' }}
+          />
+          {parseErr && <div style={{ color: '#fca5a5', fontSize: 12, marginTop: 5 }}>{parseErr}</div>}
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <TouchBtn onClick={() => { setGpsInput(SAMPLE_GPS); setParseErr('') }} color="#2e303a" style={{ flex: 1, fontSize: 13, padding: '10px' }}>
+              샘플
+            </TouchBtn>
+            <TouchBtn onClick={loadRoute} disabled={!gpsInput.trim()} style={{ flex: 2, fontSize: 13, padding: '10px' }}>
+              경로 불러오기
+            </TouchBtn>
           </div>
         </div>
-      ) : mapError ? (
-        <div style={{ background: '#7f1d1d', borderRadius: 14, padding: 16, color: '#fca5a5', fontSize: 14, lineHeight: 1.6 }}>
-          {mapError}
-          <div style={{ marginTop: 8, fontSize: 12, color: '#fca5a5', opacity: 0.8 }}>
-            Kakao Developers → 내 애플리케이션 → 플랫폼 → Web 사이트 도메인에 현재 도메인을 추가해주세요.
+      )}
+
+      {/* 재생 컨트롤 */}
+      {coords.length > 0 && (
+        <div style={{ background: '#1f2028', borderRadius: 14, padding: '12px 14px' }}>
+          {/* 진행 바 */}
+          <div onClick={scrub}
+            style={{ background: '#2e303a', borderRadius: 4, height: 6, marginBottom: 12, cursor: 'pointer', overflow: 'hidden' }}>
+            <div style={{ background: 'linear-gradient(90deg,#7c3aed,#a78bfa)', height: '100%', width: `${pctDone}%`, borderRadius: 4, transition: 'width .05s linear' }} />
           </div>
-        </div>
-      ) : (
-        <>
-          {/* 지도 */}
-          <div style={{ flex: 1, position: 'relative', borderRadius: 14, overflow: 'hidden', background: '#e8e8e8', minHeight: 220 }}>
-            <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
 
-            {/* 진행 오버레이 */}
-            {coords.length > 0 && (
-              <div style={{ position: 'absolute', top: 10, left: 10, background: 'rgba(22,23,29,0.85)', borderRadius: 10, padding: '7px 12px', fontSize: 13, backdropFilter: 'blur(4px)', zIndex: 10 }}>
-                <span style={{ color: '#a78bfa', fontWeight: 700 }}>{kmDone}</span>
-                <span style={{ color: '#9ca3af' }}> / {routeKm} km</span>
-                <span style={{ color: '#6b7280', marginLeft: 8 }}>{pctDone}%</span>
-              </div>
-            )}
-
-            {/* 경로 입력 토글 */}
-            <button onClick={() => setShowPanel(v => !v)}
-              style={{ position: 'absolute', top: 10, right: 10, background: 'rgba(22,23,29,0.85)', border: '1px solid #4b5563', borderRadius: 10, padding: '7px 12px', color: '#FFCD00', fontSize: 13, cursor: 'pointer', backdropFilter: 'blur(4px)', zIndex: 10, WebkitTapHighlightColor: 'transparent' }}>
-              {showPanel ? '✕ 닫기' : '📍 경로 입력'}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* 리셋 */}
+            <button onClick={reset}
+              style={{ background: '#2e303a', border: 'none', borderRadius: 10, width: 44, height: 44, color: '#9ca3af', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, WebkitTapHighlightColor: 'transparent' }}>
+              ⏮
             </button>
 
-            {!mapLoaded && (
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280', background: '#1f2028', fontSize: 14 }}>
-                카카오맵 로딩 중...
-              </div>
-            )}
+            {/* 재생 / 일시정지 */}
+            <button onClick={playing ? pause : play}
+              style={{ flex: 1, background: playing ? '#5b21b6' : '#7c3aed', border: 'none', borderRadius: 12, height: 44, color: '#fff', cursor: 'pointer', fontSize: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', WebkitTapHighlightColor: 'transparent' }}>
+              {playing ? '⏸' : progress >= 1 ? '↺' : '▶'}
+            </button>
+
+            {/* 속도 선택 */}
+            <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+              {ANIM_SPEEDS.map((s, i) => (
+                <button key={i} onClick={() => setSpeedIdx(i)}
+                  style={{ background: speedIdx === i ? '#5b21b6' : '#2e303a', border: 'none', borderRadius: 8, width: 36, height: 36, color: speedIdx === i ? '#fff' : '#9ca3af', cursor: 'pointer', fontSize: 12, fontWeight: 600, WebkitTapHighlightColor: 'transparent' }}>
+                  {s.label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* GPS 입력 패널 */}
-          {showPanel && (
-            <div style={{ background: '#1f2028', borderRadius: 14, padding: 14 }}>
-              <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>
-                GPS 좌표 입력 — <code style={{ color: '#6b7280', fontSize: 11 }}>[[lat,lng], ...]</code> 또는 <code style={{ color: '#6b7280', fontSize: 11 }}>[{'{'}lat,lng{'}'},...]</code>
-              </div>
-              <textarea
-                value={gpsInput}
-                onChange={e => { setGpsInput(e.target.value); setParseErr('') }}
-                rows={3}
-                placeholder="[[37.5195, 126.9393], [37.5199, 126.9400], ...]"
-                style={{ ...inputStyle, resize: 'vertical', fontSize: 12, fontFamily: 'monospace' }}
-              />
-              {parseErr && <div style={{ color: '#fca5a5', fontSize: 12, marginTop: 5 }}>{parseErr}</div>}
-              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                <TouchBtn onClick={() => { setGpsInput(SAMPLE_GPS); setParseErr('') }} color="#2e303a" style={{ flex: 1, fontSize: 13, padding: '10px' }}>
-                  샘플
-                </TouchBtn>
-                <TouchBtn onClick={loadRoute} disabled={!gpsInput.trim() || !mapLoaded} style={{ flex: 2, fontSize: 13, padding: '10px' }}>
-                  경로 불러오기
-                </TouchBtn>
-              </div>
+          {/* 경로 요약 */}
+          <div style={{ display: 'flex', gap: 16, marginTop: 10, paddingTop: 10, borderTop: '1px solid #2e303a' }}>
+            <div style={{ flex: 1, textAlign: 'center' }}>
+              <div style={{ color: '#6b7280', fontSize: 11 }}>전체 거리</div>
+              <div style={{ color: '#34d399', fontWeight: 700, fontSize: 15 }}>{routeKm} km</div>
             </div>
-          )}
-
-          {/* 재생 컨트롤 */}
-          {coords.length > 0 && (
-            <div style={{ background: '#1f2028', borderRadius: 14, padding: '12px 14px' }}>
-              {/* 진행 바 */}
-              <div onClick={scrub}
-                style={{ background: '#2e303a', borderRadius: 4, height: 6, marginBottom: 12, cursor: 'pointer', overflow: 'hidden' }}>
-                <div style={{ background: 'linear-gradient(90deg,#7c3aed,#a78bfa)', height: '100%', width: `${pctDone}%`, borderRadius: 4, transition: 'width .05s linear' }} />
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {/* 리셋 */}
-                <button onClick={reset}
-                  style={{ background: '#2e303a', border: 'none', borderRadius: 10, width: 44, height: 44, color: '#9ca3af', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, WebkitTapHighlightColor: 'transparent' }}>
-                  ⏮
-                </button>
-
-                {/* 재생 / 일시정지 */}
-                <button onClick={playing ? pause : play}
-                  style={{ flex: 1, background: playing ? '#5b21b6' : '#7c3aed', border: 'none', borderRadius: 12, height: 44, color: '#fff', cursor: 'pointer', fontSize: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', WebkitTapHighlightColor: 'transparent' }}>
-                  {playing ? '⏸' : progress >= 1 ? '↺' : '▶'}
-                </button>
-
-                {/* 속도 선택 */}
-                <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                  {ANIM_SPEEDS.map((s, i) => (
-                    <button key={i} onClick={() => setSpeedIdx(i)}
-                      style={{ background: speedIdx === i ? '#5b21b6' : '#2e303a', border: 'none', borderRadius: 8, width: 36, height: 36, color: speedIdx === i ? '#fff' : '#9ca3af', cursor: 'pointer', fontSize: 12, fontWeight: 600, WebkitTapHighlightColor: 'transparent' }}>
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* 경로 요약 */}
-              <div style={{ display: 'flex', gap: 16, marginTop: 10, paddingTop: 10, borderTop: '1px solid #2e303a' }}>
-                <div style={{ flex: 1, textAlign: 'center' }}>
-                  <div style={{ color: '#6b7280', fontSize: 11 }}>전체 거리</div>
-                  <div style={{ color: '#34d399', fontWeight: 700, fontSize: 15 }}>{routeKm} km</div>
-                </div>
-                <div style={{ flex: 1, textAlign: 'center' }}>
-                  <div style={{ color: '#6b7280', fontSize: 11 }}>좌표 수</div>
-                  <div style={{ color: '#60a5fa', fontWeight: 700, fontSize: 15 }}>{coords.length}</div>
-                </div>
-                <div style={{ flex: 1, textAlign: 'center' }}>
-                  <div style={{ color: '#6b7280', fontSize: 11 }}>진행 거리</div>
-                  <div style={{ color: '#a78bfa', fontWeight: 700, fontSize: 15 }}>{kmDone} km</div>
-                </div>
-              </div>
+            <div style={{ flex: 1, textAlign: 'center' }}>
+              <div style={{ color: '#6b7280', fontSize: 11 }}>좌표 수</div>
+              <div style={{ color: '#60a5fa', fontWeight: 700, fontSize: 15 }}>{coords.length}</div>
             </div>
-          )}
-        </>
+            <div style={{ flex: 1, textAlign: 'center' }}>
+              <div style={{ color: '#6b7280', fontSize: 11 }}>진행 거리</div>
+              <div style={{ color: '#a78bfa', fontWeight: 700, fontSize: 15 }}>{kmDone} km</div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -531,19 +437,18 @@ function MapTab({ kakaoMapsKey, active }) {
 
 /* ════════════════ 메인 앱 ════════════════ */
 export default function App() {
-  const [runs,          setRuns]          = useState([])
-  const [loading,       setLoading]       = useState(true)
-  const [tab,           setTab]           = useState(0)
-  const [showForm,      setShowForm]      = useState(false)
-  const [form,          setForm]          = useState({ date: '', distance: '', pace: '', hr: '', calories: '', note: '' })
-  const [saving,        setSaving]        = useState(false)
-  const [selectedIdx,   setSelectedIdx]   = useState(null)
-  const [aiInput,       setAiInput]       = useState('')
-  const [aiMessages,    setAiMessages]    = useState([])
-  const [aiLoading,     setAiLoading]     = useState(false)
-  const [claudeKey,     setClaudeKey]     = useState(() => localStorage.getItem('claudeKey') || '')
-  const [kakaoMapsKey,  setKakaoMapsKey]  = useState(() => localStorage.getItem('kakaoMapsKey') || '')
-  const [error,         setError]         = useState('')
+  const [runs,        setRuns]        = useState([])
+  const [loading,     setLoading]     = useState(true)
+  const [tab,         setTab]         = useState(0)
+  const [showForm,    setShowForm]    = useState(false)
+  const [form,        setForm]        = useState({ date: '', distance: '', pace: '', hr: '', calories: '', note: '' })
+  const [saving,      setSaving]      = useState(false)
+  const [selectedIdx, setSelectedIdx] = useState(null)
+  const [aiInput,     setAiInput]     = useState('')
+  const [aiMessages,  setAiMessages]  = useState([])
+  const [aiLoading,   setAiLoading]   = useState(false)
+  const [claudeKey,   setClaudeKey]   = useState(() => localStorage.getItem('claudeKey') || '')
+  const [error,       setError]       = useState('')
   const aiEndRef = useRef(null)
 
   const fetchRuns = useCallback(async () => {
@@ -622,7 +527,6 @@ export default function App() {
   const totalCal   = runs.reduce((s, r) => s + r.calories, 0)
   const recent     = runs.slice(-14)
 
-  /* AI 코치 */
   const askAI = async () => {
     if (!aiInput.trim() || !claudeKey) return
     const userMsg  = aiInput.trim()
@@ -642,10 +546,8 @@ export default function App() {
     } finally { setAiLoading(false) }
   }
 
-  const saveClaudeKey   = k => { setClaudeKey(k);   localStorage.setItem('claudeKey', k) }
-  const saveKakaoKey    = k => { setKakaoMapsKey(k); localStorage.setItem('kakaoMapsKey', k) }
+  const saveClaudeKey = k => { setClaudeKey(k); localStorage.setItem('claudeKey', k) }
 
-  /* ── 렌더 ── */
   return (
     <div style={{ minHeight: '100dvh', background: '#16171d', color: '#f3f4f6', fontFamily: 'system-ui,"Segoe UI",sans-serif', display: 'flex', flexDirection: 'column', paddingBottom: 'calc(62px + env(safe-area-inset-bottom))' }}>
 
@@ -665,7 +567,6 @@ export default function App() {
         </div>
       )}
 
-      {/* 콘텐츠 */}
       <div style={{ flex: 1, padding: '14px 16px', overflowY: 'auto' }}>
         {loading ? (
           <div style={{ textAlign: 'center', padding: 60, color: '#9ca3af' }}>로딩 중...</div>
@@ -786,9 +687,9 @@ export default function App() {
               </div>
             )}
 
-            {/* ── 지도 (항상 마운트, display로 토글) ── */}
+            {/* ── 지도 (항상 마운트) ── */}
             <div style={{ display: tab === 2 ? 'block' : 'none' }}>
-              <MapTab kakaoMapsKey={kakaoMapsKey} active={tab === 2} />
+              <MapTab active={tab === 2} />
             </div>
 
             {/* ── AI 코치 ── */}
@@ -839,18 +740,11 @@ export default function App() {
                 </div>
 
                 <div style={{ background: '#1f2028', borderRadius: 14, padding: 16 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 4 }}>Kakao Maps JavaScript API 키</div>
-                  <div style={{ color: '#6b7280', fontSize: 12, marginBottom: 10, lineHeight: 1.6 }}>
-                    지도 탭 GPS 경로 시각화에 사용 · 로컬 저장<br />
-                    <a href="https://developers.kakao.com/console/app" target="_blank" rel="noreferrer" style={{ color: '#FFCD00' }}>Kakao Developers</a>에서 앱 생성 후 JavaScript 키 입력
-                  </div>
-                  <input type="password" value={kakaoMapsKey} onChange={e => saveKakaoKey(e.target.value)} placeholder="카카오 JavaScript 앱 키" style={inputStyle} />
-                  {kakaoMapsKey && <button onClick={() => saveKakaoKey('')} style={{ marginTop: 10, background: 'none', border: '1px solid #4b5563', borderRadius: 8, padding: '7px 14px', color: '#9ca3af', cursor: 'pointer', fontSize: 13 }}>키 삭제</button>}
-                  <div style={{ marginTop: 12, background: '#2e303a', borderRadius: 10, padding: '10px 12px', fontSize: 12, color: '#9ca3af', lineHeight: 1.8 }}>
-                    <div style={{ fontWeight: 600, color: '#f3f4f6', marginBottom: 4 }}>도메인 등록 필수</div>
-                    <div>Kakao Developers → 내 애플리케이션 → 플랫폼</div>
-                    <div>→ Web → 사이트 도메인에 아래 주소 추가:</div>
-                    <code style={{ color: '#FFCD00', fontSize: 11 }}>https://running-dashboard-two.vercel.app</code>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>🗺️ 지도 정보</div>
+                  <div style={{ background: '#2e303a', borderRadius: 10, padding: '10px 12px', fontSize: 13, color: '#9ca3af', lineHeight: 1.8 }}>
+                    <div>지도: <span style={{ color: '#34d399' }}>Leaflet + OpenStreetMap</span></div>
+                    <div>타일: <span style={{ color: '#60a5fa' }}>CartoDB Dark Matter</span></div>
+                    <div>API 키: <span style={{ color: '#34d399' }}>불필요 (완전 무료)</span></div>
                   </div>
                 </div>
 
@@ -912,6 +806,8 @@ export default function App() {
         input[type="number"] { -moz-appearance: textfield; }
         input[type="number"]::-webkit-outer-spin-button,
         input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
+        .leaflet-container { font-family: inherit; }
+        .leaflet-control-attribution { font-size: 10px !important; }
       `}</style>
     </div>
   )
