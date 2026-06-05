@@ -92,6 +92,70 @@ function gpxLookup(store, date) {
   return store[prev.toISOString().slice(0,10)] || store[next.toISOString().slice(0,10)] || null
 }
 
+/* ── GPX localStorage 헬퍼 ──────────────────────────────────────── */
+const LS_IDX = 'gpx_idx'
+const LS_PFX = 'gpx_'
+const LS_MAX = 10
+
+function _lsIdx() {
+  try { return JSON.parse(localStorage.getItem(LS_IDX) || '[]') } catch { return [] }
+}
+function _adjDate(date, days) {
+  const d = new Date(date); d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+function lsSaveGPX(date, coords) {
+  if (!date || !coords?.length) return
+  // 소수점 5자리로 압축
+  const data = JSON.stringify(coords.map(p => [
+    Math.round(p.lat * 1e5) / 1e5,
+    Math.round(p.lng * 1e5) / 1e5,
+  ]))
+  const key = LS_PFX + date
+  let idx = _lsIdx().filter(d => d !== date)
+  idx.push(date) // 최신을 맨 뒤로
+
+  // 최대 10개 초과 시 오래된 것 삭제
+  while (idx.length > LS_MAX) {
+    try { localStorage.removeItem(LS_PFX + idx.shift()) } catch {}
+  }
+
+  const write = () => {
+    localStorage.setItem(key, data)
+    localStorage.setItem(LS_IDX, JSON.stringify(idx))
+  }
+  try {
+    write()
+  } catch {
+    // 용량 초과 시 오래된 것부터 삭제 후 재시도
+    while (idx.length > 1) {
+      try { localStorage.removeItem(LS_PFX + idx.shift()) } catch {}
+      try { write(); return } catch {}
+    }
+  }
+}
+
+function lsLoadGPX(date) {
+  try {
+    const raw = localStorage.getItem(LS_PFX + date)
+    if (!raw) return null
+    return JSON.parse(raw).map(([lat, lng]) => ({ lat, lng }))
+  } catch { return null }
+}
+
+function lsHasGPX(date) {
+  try { return !!localStorage.getItem(LS_PFX + date) } catch { return false }
+}
+
+function lsHasGPXFuzzy(date) {
+  return lsHasGPX(date) || lsHasGPX(_adjDate(date, -1)) || lsHasGPX(_adjDate(date, 1))
+}
+
+function lsLoadGPXFuzzy(date) {
+  return lsLoadGPX(date) || lsLoadGPX(_adjDate(date, -1)) || lsLoadGPX(_adjDate(date, 1))
+}
+
 // GPX 전용 파서 — 좌표 + 고도·시간·심박수 메타데이터 추출
 function parseGPXFile(xmlText) {
   const doc = new DOMParser().parseFromString(xmlText, 'application/xml')
@@ -588,7 +652,10 @@ function RecordsTab({ runs, onAdd, onDelete, gpxStore, onViewRoute }) {
                 <div style={{flex:1,background:sel?'#1A1A0A':C.card,borderRadius:16,padding:'14px 16px',border:`1px solid ${sel?C.lime:C.border}`,transition:'all .15s',cursor:'pointer'}}>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
                     <div>
-                      <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:'0.12em',textTransform:'uppercase'}}>{dateLabel}</div>
+                      <div style={{display:'flex',alignItems:'center',gap:5}}>
+                        <div style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:'0.12em',textTransform:'uppercase'}}>{dateLabel}</div>
+                        {lsHasGPXFuzzy(r.date)&&<span style={{fontSize:11}} title="GPX 로컬 저장됨">📍</span>}
+                      </div>
                       <div style={{fontSize:32,fontWeight:900,letterSpacing:'-2px',color:C.white,lineHeight:1.1}}>{r.distance}<span style={{fontSize:13,color:C.muted,fontWeight:600}}> km</span></div>
                     </div>
                     <MiniRoute date={r.date} w={72} h={44}/>
@@ -603,15 +670,26 @@ function RecordsTab({ runs, onAdd, onDelete, gpxStore, onViewRoute }) {
                   </div>
                   {r.note&&<div style={{color:C.muted,fontSize:12,marginTop:8,fontStyle:'italic'}}>"{r.note}"</div>}
 
-                  {/* 경로 보기 버튼 — GPX 출처 기록이거나 세션에 좌표가 있을 때 표시 (±1일 허용) */}
-                  {(r.source === 'gpx' || gpxLookup(gpxStore, r.date)) && (
-                    <button
-                      onClick={e=>{e.stopPropagation();onViewRoute(r.date)}}
-                      onTouchEnd={e=>{e.stopPropagation();e.preventDefault();onViewRoute(r.date)}}
-                      style={{marginTop:10,width:'100%',background:`${C.lime}18`,border:`1px solid ${C.lime}55`,borderRadius:10,padding:'9px',color:C.lime,fontSize:12,fontWeight:800,letterSpacing:'0.08em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent',touchAction:'manipulation',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
-                      <span style={{fontSize:14}}>▶</span> 경로 보기
-                    </button>
-                  )}
+                  {/* 경로 보기 영역 — GPX 기록 판별 후 상태별 UI */}
+                  {(()=>{
+                    const hasLS   = lsHasGPXFuzzy(r.date)
+                    const hasSess = !!gpxLookup(gpxStore, r.date)
+                    const isGPX   = r.source === 'gpx' || hasLS || hasSess
+                    if (!isGPX) return null
+                    if (!hasLS && !hasSess) return (
+                      <div style={{marginTop:10,background:`${C.orange}15`,border:`1px solid ${C.orange}33`,borderRadius:10,padding:'9px 12px',color:C.muted,fontSize:12,display:'flex',alignItems:'center',gap:6}}>
+                        <span>⚠️</span> GPX 재업로드 필요
+                      </div>
+                    )
+                    return (
+                      <button
+                        onClick={e=>{e.stopPropagation();onViewRoute(r.date)}}
+                        onTouchEnd={e=>{e.stopPropagation();e.preventDefault();onViewRoute(r.date)}}
+                        style={{marginTop:10,width:'100%',background:`${C.lime}18`,border:`1px solid ${C.lime}55`,borderRadius:10,padding:'9px',color:C.lime,fontSize:12,fontWeight:800,letterSpacing:'0.08em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent',touchAction:'manipulation',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+                        {hasLS ? '📍' : '▶'} 경로 보기
+                      </button>
+                    )
+                  })()}
 
                   {sel&&<button onClick={e=>{e.stopPropagation();onDelete(r._origIdx);setSelectedIdx(null)}}
                     style={{marginTop:8,width:'100%',background:C.red+'22',border:`1px solid ${C.red}44`,borderRadius:10,padding:'10px',color:C.red,fontSize:12,fontWeight:800,letterSpacing:'0.06em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
@@ -1333,10 +1411,13 @@ export default function App() {
   const [autoPlay,    setAutoPlay]    = useState(false)
   const fileInputRef = useRef(null)
 
-  // GPX를 세션 스토어에 저장하는 헬퍼
+  // GPX를 세션 스토어 + localStorage에 저장하는 헬퍼
   const storeGPX = (coords, meta) => {
     const date = meta.runEntry?.date
-    if (date) setGpxStore(prev => ({ ...prev, [date]: { coords, meta } }))
+    if (date) {
+      setGpxStore(prev => ({ ...prev, [date]: { coords, meta } }))
+      lsSaveGPX(date, coords)
+    }
     setUploadedGPS(JSON.stringify(coords.map(p => [p.lat, p.lng])))
     setGpxMeta(meta)
   }
@@ -1411,11 +1492,17 @@ export default function App() {
     setTab(2)
   }
 
-  // LOG 탭 "경로 보기" — gpxStore에서 ±1일 허용 날짜 매칭 후 MAP 탭으로 이동
+  // LOG 탭 "경로 보기" — gpxStore → localStorage 순으로 좌표 조회 후 MAP 탭 이동
   const handleViewRoute = (date) => {
     const gpx = gpxLookup(gpxStore, date)
-    if (!gpx) return
-    storeGPX(gpx.coords, gpx.meta)
+    if (gpx) {
+      storeGPX(gpx.coords, gpx.meta)
+    } else {
+      const coords = lsLoadGPXFuzzy(date)
+      if (!coords) return
+      const fakeMeta = { runEntry: { date }, name: null, dateStr: null, duration: null, elevGain: 0, avgHR: null, routeDist: 0, pointCount: coords.length, hasElevation: false, hasHR: false }
+      storeGPX(coords, fakeMeta)
+    }
     setAutoPlay(true)
     setTab(2)
   }
