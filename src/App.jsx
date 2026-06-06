@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
@@ -23,8 +23,7 @@ const C = {
 const TABS = [
   { id: 0, label: 'HOME',  icon: '⬤' },
   { id: 1, label: 'LOG',   icon: '≡' },
-  { id: 2, label: 'MAP',   icon: '◎' },
-  { id: 3, label: 'STATS', icon: '▦' },
+  { id: 2, label: 'STATS', icon: '▦' },
 ]
 
 const PACE_ZONES = [
@@ -848,160 +847,158 @@ function BigStatCard({ label, val, unit, color }) {
 }
 
 /* ─────────────────────────────────────────
-   MAP TAB (Apple Health style)
+   ROUTE MODAL — 전체화면 지도 + 애니메이션
 ───────────────────────────────────────── */
-function MapTab({ active, uploadedGPS, gpxMeta, onUploadConsumed, autoPlay, onAutoPlayDone }) {
-  const mapRef=useRef(null),mapObj=useRef(null),bgLineRef=useRef(null)
-  const gradSegsRef=useRef([]),lastVisibleRef=useRef(-1)
-  const runnerRef=useRef(null),rafId=useRef(null)
-  const progressRef=useRef(0),playingRef=useRef(false),coordsRef=useRef([])
-  const pendingPlayRef=useRef(false)
+function RouteModal({ coords, meta, autoPlay, onClose }) {
+  const mapRef      = useRef(null)
+  const mapObj      = useRef(null)
+  const bgLineRef   = useRef(null)
+  const gradSegsRef = useRef([])
+  const lastVisRef  = useRef(-1)
+  const runnerRef   = useRef(null)
+  const rafId       = useRef(null)
+  const progressRef = useRef(0)
+  const playingRef  = useRef(false)
+  const coordsRef   = useRef(coords)
 
-  const [activated,  setActivated]  = useState(false)
-  const [mapReady,   setMapReady]   = useState(false)
-  const [gpsInput,   setGpsInput]   = useState('')
-  const [coords,     setCoords]     = useState([])
-  const [routeKm,    setRouteKm]    = useState(0)
-  const [playing,    setPlaying]    = useState(false)
-  const [progress,   setProgress]   = useState(0)
-  const [speedIdx,   setSpeedIdx]   = useState(1)
-  const [showPanel,  setShowPanel]  = useState(true)
-  const [parseErr,   setParseErr]   = useState('')
+  const [playing,  setPlaying]  = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [speedIdx, setSpeedIdx] = useState(1)
 
-  useEffect(()=>{ if(active&&!activated) setActivated(true) },[active,activated])
-  useEffect(()=>{
-    if(!activated||!mapRef.current||mapObj.current) return
-    const map=L.map(mapRef.current,{center:[37.5665,126.9780],zoom:13,zoomControl:true})
+  const routeKm = useMemo(() => {
+    if (coords.length < 2) return 0
+    let d = 0
+    for (let i = 1; i < coords.length; i++)
+      d += haversine(coords[i-1].lat, coords[i-1].lng, coords[i].lat, coords[i].lng)
+    return parseFloat(d.toFixed(2))
+  }, [coords])
+
+  const showSegsUpTo = useCallback((n) => {
+    const segs = gradSegsRef.current, last = lastVisRef.current
+    if (n > last) { for (let i=last+1;i<=Math.min(n,segs.length-1);i++) segs[i].setStyle({opacity:1}); lastVisRef.current=Math.min(n,segs.length-1) }
+    else if (n < last) { for (let i=n+1;i<=last;i++) segs[i].setStyle({opacity:0}); lastVisRef.current=n }
+  }, [])
+
+  useEffect(() => {
+    if (!mapRef.current) return
+    const map = L.map(mapRef.current, { center:[37.5665,126.9780], zoom:13, zoomControl:false })
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
       attribution:'© <a href="https://openstreetmap.org" style="color:#555">OSM</a> © <a href="https://carto.com" style="color:#555">CARTO</a>',maxZoom:19
     }).addTo(map)
-    mapObj.current=map
-    setMapReady(true)
-  },[activated])
+    mapObj.current = map
 
-  // GPX 업로드 시 자동 로드
-  useEffect(()=>{
-    if(!uploadedGPS||!mapReady) return
-    if(autoPlay) pendingPlayRef.current=true
-    setGpsInput(uploadedGPS)
-    setParseErr('')
-    loadRouteFrom(uploadedGPS)
-    onUploadConsumed?.()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[uploadedGPS, mapReady])
+    const lls = coords.map(p=>[p.lat,p.lng])
+    const n   = coords.length
+    bgLineRef.current = L.polyline(lls,{color:'#fff',weight:4,opacity:0.12,lineCap:'round',lineJoin:'round'}).addTo(map)
+    const segs = Math.min(GRAD_SEGS, n-1)
+    for (let i=0;i<segs;i++) {
+      const si=Math.floor(i*(n-1)/segs), ei=Math.floor((i+1)*(n-1)/segs)+1
+      const seg=L.polyline(coords.slice(si,Math.min(ei,n)).map(p=>[p.lat,p.lng]),
+        {color:gradColor(i/(segs-1)),weight:6,opacity:0,lineCap:'round',lineJoin:'round',smoothFactor:0}).addTo(map)
+      gradSegsRef.current.push(seg)
+    }
+    const ci = (c) => L.divIcon({html:`<div style="width:18px;height:18px;border-radius:50%;background:${c};border:3px solid #fff;box-shadow:0 0 10px 3px ${c}88;"></div>`,className:'',iconSize:[18,18],iconAnchor:[9,9]})
+    L.marker(lls[0],{icon:ci('#30D158'),zIndexOffset:100}).addTo(map)
+    L.marker(lls[n-1],{icon:ci('#FF453A'),zIndexOffset:100}).addTo(map)
+    runnerRef.current = L.marker(lls[0],{icon:L.divIcon({html:`<div class="rp-wrap"><div class="rp-ring rp-r1"></div><div class="rp-ring rp-r2"></div><div class="rp-ring rp-r3"></div><div class="rp-core"></div></div>`,className:'',iconSize:[40,40],iconAnchor:[20,20]}),zIndexOffset:1000}).addTo(map)
+    map.fitBounds(L.latLngBounds(lls), {padding:[60,60]})
 
-  // 경로 로드 완료 후 자동 재생
-  useEffect(()=>{
-    if(pendingPlayRef.current && coords.length > 0){
-      pendingPlayRef.current=false
-      onAutoPlayDone?.()
-      setTimeout(()=>play(), 600)  // 지도 렌더링 후 재생
+    if (autoPlay) setTimeout(doPlay, 600)
+
+    return () => {
+      cancelAnimationFrame(rafId.current)
+      playingRef.current = false
+      map.remove()
+      mapObj.current = null
+      bgLineRef.current = null
+      gradSegsRef.current = []
+      lastVisRef.current = -1
+      runnerRef.current = null
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[coords])
+  }, [])
 
-  useEffect(()=>{ if(active&&mapObj.current) setTimeout(()=>mapObj.current.invalidateSize(),50) },[active])
-  useEffect(()=>{ coordsRef.current=coords },[coords])
-
-  const clearLayers=()=>{
-    bgLineRef.current?.remove(); bgLineRef.current=null
-    gradSegsRef.current.forEach(s=>s.remove()); gradSegsRef.current=[]; lastVisibleRef.current=-1
-    runnerRef.current?.remove(); runnerRef.current=null
-  }
-  const showSegsUpTo=(n)=>{
-    const segs=gradSegsRef.current,last=lastVisibleRef.current
-    if(n>last){ for(let i=last+1;i<=Math.min(n,segs.length-1);i++) segs[i].setStyle({opacity:1}); lastVisibleRef.current=Math.min(n,segs.length-1) }
-    else if(n<last){ for(let i=n+1;i<=last;i++) segs[i].setStyle({opacity:0}); lastVisibleRef.current=n }
-  }
-  const loadRouteFrom=(inputStr)=>{
-    setParseErr('')
-    try {
-      const pts=parseGPS(inputStr)
-      let dist=0; for(let i=1;i<pts.length;i++) dist+=haversine(pts[i-1].lat,pts[i-1].lng,pts[i].lat,pts[i].lng)
-      setRouteKm(parseFloat(dist.toFixed(2))); setCoords(pts); coordsRef.current=pts
-      cancelAnimationFrame(rafId.current); playingRef.current=false; progressRef.current=0
-      setPlaying(false); setProgress(0); clearLayers()
-      const map=mapObj.current,lls=pts.map(p=>[p.lat,p.lng]),n=pts.length
-      bgLineRef.current=L.polyline(lls,{color:'#ffffff',weight:4,opacity:0.12,lineCap:'round',lineJoin:'round'}).addTo(map)
-      const segs=Math.min(GRAD_SEGS,n-1)
-      for(let i=0;i<segs;i++){
-        const si=Math.floor(i*(n-1)/segs),ei=Math.floor((i+1)*(n-1)/segs)+1
-        const seg=L.polyline(pts.slice(si,Math.min(ei,n)).map(p=>[p.lat,p.lng]),{color:gradColor(i/(segs-1)),weight:6,opacity:0,lineCap:'round',lineJoin:'round',smoothFactor:0}).addTo(map)
-        gradSegsRef.current.push(seg)
-      }
-      const ci=(c,gl)=>L.divIcon({html:`<div style="width:18px;height:18px;border-radius:50%;background:${c};border:3px solid #fff;box-shadow:0 0 10px 3px ${c}88;"></div>`,className:'',iconSize:[18,18],iconAnchor:[9,9]})
-      L.marker(lls[0],{icon:ci('#30D158'),zIndexOffset:100}).addTo(map)
-      L.marker(lls[n-1],{icon:ci('#FF453A'),zIndexOffset:100}).addTo(map)
-      runnerRef.current=L.marker(lls[0],{icon:L.divIcon({html:`<div class="rp-wrap"><div class="rp-ring rp-r1"></div><div class="rp-ring rp-r2"></div><div class="rp-ring rp-r3"></div><div class="rp-core"></div></div>`,className:'',iconSize:[40,40],iconAnchor:[20,20]}),zIndexOffset:1000}).addTo(map)
-      map.fitBounds(L.latLngBounds(lls),{padding:[48,48]}); setShowPanel(false)
-    } catch(e){ setParseErr(e.message) }
-  }
-  const play=()=>{
-    if(playingRef.current) return
-    if(progressRef.current>=1){ progressRef.current=0; setProgress(0); showSegsUpTo(-1) }
-    playingRef.current=true; setPlaying(true)
-    const speed=ANIM_SPEEDS[speedIdx].value; let lastTs=null
-    const frame=(ts)=>{
-      if(!playingRef.current) return
-      if(!lastTs) lastTs=ts
-      const dt=Math.min(ts-lastTs,50); lastTs=ts
-      const total=coordsRef.current.length
-      progressRef.current=Math.min(progressRef.current+(speed*dt)/(ANIM_SECS_1X*1000),1)
-      const rawIdx=progressRef.current*(total-1),fi=Math.floor(rawIdx),frac=rawIdx-fi
-      if(fi<total-1){ const a=coordsRef.current[fi],b=coordsRef.current[fi+1]; runnerRef.current?.setLatLng([a.lat+(b.lat-a.lat)*frac,a.lng+(b.lng-a.lng)*frac]) }
+  function doPlay() {
+    if (playingRef.current) return
+    if (progressRef.current >= 1) { progressRef.current=0; setProgress(0); showSegsUpTo(-1) }
+    playingRef.current = true; setPlaying(true)
+    const spd = ANIM_SPEEDS[speedIdx].value; let lastTs = null
+    const frame = (ts) => {
+      if (!playingRef.current) return
+      if (!lastTs) lastTs = ts
+      const dt = Math.min(ts-lastTs, 50); lastTs = ts
+      const total = coordsRef.current.length
+      progressRef.current = Math.min(progressRef.current + (spd*dt)/(ANIM_SECS_1X*1000), 1)
+      const rawIdx=progressRef.current*(total-1), fi=Math.floor(rawIdx), frac=rawIdx-fi
+      if (fi < total-1) { const a=coordsRef.current[fi],b=coordsRef.current[fi+1]; runnerRef.current?.setLatLng([a.lat+(b.lat-a.lat)*frac,a.lng+(b.lng-a.lng)*frac]) }
       showSegsUpTo(Math.floor(progressRef.current*(gradSegsRef.current.length-1)))
       setProgress(progressRef.current)
-      if(progressRef.current<1) rafId.current=requestAnimationFrame(frame)
+      if (progressRef.current < 1) rafId.current = requestAnimationFrame(frame)
       else { playingRef.current=false; setPlaying(false) }
     }
-    rafId.current=requestAnimationFrame(frame)
+    rafId.current = requestAnimationFrame(frame)
   }
-  const pause=()=>{ playingRef.current=false; setPlaying(false); cancelAnimationFrame(rafId.current) }
-  const reset=()=>{
-    pause(); progressRef.current=0; setProgress(0); showSegsUpTo(-1)
-    const c=coordsRef.current; if(c.length) runnerRef.current?.setLatLng([c[0].lat,c[0].lng])
+  const doPause = () => { playingRef.current=false; setPlaying(false); cancelAnimationFrame(rafId.current) }
+  const doReset = () => {
+    doPause(); progressRef.current=0; setProgress(0); showSegsUpTo(-1)
+    if (coordsRef.current.length) runnerRef.current?.setLatLng([coordsRef.current[0].lat,coordsRef.current[0].lng])
   }
-  const scrub=(e)=>{
-    const rect=e.currentTarget.getBoundingClientRect(),pct=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width))
+  const doScrub = (e) => {
+    const rect=e.currentTarget.getBoundingClientRect()
+    const pct=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width))
     progressRef.current=pct; setProgress(pct)
-    const total=coordsRef.current.length; if(!total||!mapObj.current) return
+    const total=coordsRef.current.length; if(!total) return
     const fi=Math.min(Math.floor(pct*(total-1)),total-2)
     showSegsUpTo(Math.floor(pct*(gradSegsRef.current.length-1)))
     runnerRef.current?.setLatLng([coordsRef.current[fi].lat,coordsRef.current[fi].lng])
   }
-  const pctDone=Math.round(progress*100),kmDone=parseFloat((progress*routeKm).toFixed(2))
+
+  const pctDone = Math.round(progress*100)
+  const kmDone  = parseFloat((progress*routeKm).toFixed(2))
+
   return (
-    <div style={{display:'flex',flexDirection:'column',gap:10,height:'calc(100dvh - 136px)',padding:'0 16px'}}>
-      <div style={{flex:1,position:'relative',borderRadius:16,overflow:'hidden',minHeight:220}}>
-        <div ref={mapRef} style={{width:'100%',height:'100%'}}/>
-        {coords.length>0&&<div style={{position:'absolute',top:12,left:12,background:'rgba(0,0,0,0.7)',borderRadius:12,padding:'8px 14px',fontSize:13,backdropFilter:'blur(8px)',zIndex:1000,display:'flex',alignItems:'center',gap:6}}>
-          <span style={{color:gradColor(progress),fontWeight:800,fontSize:15}}>{kmDone}</span>
-          <span style={{color:'rgba(255,255,255,0.4)',fontSize:12}}>/ {routeKm} km</span>
-        </div>}
-        <button onClick={()=>setShowPanel(v=>!v)} style={{position:'absolute',top:12,right:12,background:'rgba(0,0,0,0.7)',border:'none',borderRadius:12,padding:'8px 14px',color:C.lime,fontSize:13,fontWeight:700,cursor:'pointer',backdropFilter:'blur(8px)',zIndex:1000,WebkitTapHighlightColor:'transparent'}}>{showPanel?'✕':'📍 경로 입력'}</button>
-      </div>
-      {showPanel&&<div style={{background:C.card,borderRadius:14,padding:14}}>
-        <div style={{fontSize:11,color:C.muted,marginBottom:8,fontWeight:700}}>GPS 좌표 — [[lat,lng], ...] 또는 [{'{'}lat,lng{'}'},...]</div>
-        <textarea value={gpsInput} onChange={e=>{setGpsInput(e.target.value);setParseErr('')}} rows={3} placeholder="[[37.5195, 126.9393], ...]" style={{...inp,resize:'vertical',fontSize:12,fontFamily:'monospace'}}/>
-        {parseErr&&<div style={{color:C.red,fontSize:12,marginTop:5}}>{parseErr}</div>}
-        <div style={{display:'flex',gap:8,marginTop:10}}>
-          <button onClick={()=>{setGpsInput(SAMPLE_GPS);setParseErr('')}} style={{flex:1,background:C.card2,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px',color:C.muted,fontSize:13,fontWeight:700,cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>샘플</button>
-          <button onClick={()=>loadRouteFrom(gpsInput)} disabled={!gpsInput.trim()} style={{flex:2,background:C.lime,border:'none',borderRadius:10,padding:'10px',color:'#000',fontSize:13,fontWeight:900,cursor:'pointer',opacity:gpsInput.trim()?1:0.5,WebkitTapHighlightColor:'transparent'}}>경로 불러오기</button>
+    <div style={{position:'fixed',inset:0,zIndex:300,background:C.bg,display:'flex',flexDirection:'column'}}>
+      {/* 상단 — 닫기 버튼 */}
+      <div style={{position:'absolute',top:0,left:0,right:0,zIndex:20,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'calc(env(safe-area-inset-top) + 12px) 16px 28px',background:'linear-gradient(to bottom,rgba(0,0,0,0.75),transparent)',pointerEvents:'none'}}>
+        <div style={{fontSize:13,fontWeight:800,color:C.white,letterSpacing:'0.04em',textShadow:'0 1px 4px rgba(0,0,0,0.8)'}}>
+          {meta?.name || '경로 보기'}
         </div>
-      </div>}
-      {coords.length>0&&<div style={{background:C.card,borderRadius:14,padding:'12px 14px'}}>
-        <div onClick={scrub} style={{background:C.card2,borderRadius:4,height:5,marginBottom:12,cursor:'pointer',overflow:'hidden'}}>
+        <button
+          onPointerDown={e=>{e.stopPropagation();e.preventDefault();onClose()}}
+          style={{pointerEvents:'all',background:'rgba(0,0,0,0.55)',border:'none',borderRadius:'50%',width:36,height:36,color:C.white,fontSize:18,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',WebkitTapHighlightColor:'transparent',backdropFilter:'blur(8px)'}}>
+          ✕
+        </button>
+      </div>
+
+      {/* 지도 */}
+      <div ref={mapRef} style={{flex:1,width:'100%'}}/>
+
+      {/* 진행 거리 오버레이 */}
+      <div style={{position:'absolute',bottom:196,left:16,background:'rgba(0,0,0,0.7)',borderRadius:12,padding:'8px 14px',fontSize:13,backdropFilter:'blur(8px)',zIndex:20,display:'flex',alignItems:'center',gap:6}}>
+        <span style={{color:gradColor(progress),fontWeight:800,fontSize:15}}>{kmDone}</span>
+        <span style={{color:'rgba(255,255,255,0.4)',fontSize:12}}>/ {routeKm} km</span>
+      </div>
+
+      {/* 하단 컨트롤 */}
+      <div style={{background:'rgba(0,0,0,0.92)',backdropFilter:'blur(20px)',borderTop:`1px solid ${C.border}`,padding:`12px 16px calc(12px + env(safe-area-inset-bottom))`,zIndex:20}}>
+        {/* 스크럽 바 */}
+        <div onClick={doScrub} style={{background:C.card2,borderRadius:4,height:5,marginBottom:12,cursor:'pointer',overflow:'hidden'}}>
           <div style={{background:`linear-gradient(90deg,#30D158,#FFD60A)`,height:'100%',width:`${pctDone}%`,borderRadius:4,transition:'width .05s linear'}}/>
         </div>
+        {/* 버튼 행 */}
         <div style={{display:'flex',alignItems:'center',gap:8}}>
-          <button onClick={reset} style={{background:C.card2,border:'none',borderRadius:10,width:44,height:44,color:C.muted,cursor:'pointer',fontSize:18,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,WebkitTapHighlightColor:'transparent'}}>⏮</button>
-          <button onClick={playing?pause:play} style={{flex:1,background:playing?'#1c7a38':'#30D158',border:'none',borderRadius:12,height:44,color:'#000',cursor:'pointer',fontSize:22,fontWeight:900,display:'flex',alignItems:'center',justifyContent:'center',WebkitTapHighlightColor:'transparent'}}>{playing?'⏸':progress>=1?'↺':'▶'}</button>
+          <button onClick={doReset} style={{background:C.card2,border:'none',borderRadius:10,width:44,height:44,color:C.muted,cursor:'pointer',fontSize:18,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,WebkitTapHighlightColor:'transparent'}}>⏮</button>
+          <button onClick={playing?doPause:doPlay} style={{flex:1,background:playing?'#1c7a38':'#30D158',border:'none',borderRadius:12,height:44,color:'#000',cursor:'pointer',fontSize:22,fontWeight:900,display:'flex',alignItems:'center',justifyContent:'center',WebkitTapHighlightColor:'transparent'}}>
+            {playing?'⏸':progress>=1?'↺':'▶'}
+          </button>
           <div style={{display:'flex',gap:4,flexShrink:0}}>
-            {ANIM_SPEEDS.map((s,i)=><button key={i} onClick={()=>setSpeedIdx(i)} style={{background:speedIdx===i?'#30D158':C.card2,border:'none',borderRadius:8,width:36,height:36,color:speedIdx===i?'#000':C.muted,cursor:'pointer',fontSize:12,fontWeight:800,WebkitTapHighlightColor:'transparent'}}>{s.label}</button>)}
+            {ANIM_SPEEDS.map((s,i)=>(
+              <button key={i} onClick={()=>setSpeedIdx(i)} style={{background:speedIdx===i?'#30D158':C.card2,border:'none',borderRadius:8,width:36,height:36,color:speedIdx===i?'#000':C.muted,cursor:'pointer',fontSize:12,fontWeight:800,WebkitTapHighlightColor:'transparent'}}>{s.label}</button>
+            ))}
           </div>
         </div>
-        {/* 기본 경로 요약 */}
-        <div style={{display:'flex',marginTop:12,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+        {/* 경로 요약 */}
+        <div style={{display:'flex',marginTop:10,paddingTop:10,borderTop:`1px solid ${C.border}`}}>
           {[{l:'TOTAL',v:`${routeKm} km`,c:'#30D158'},{l:'PTS',v:`${coords.length}`,c:C.blue},{l:'DONE',v:`${kmDone} km`,c:'#FFD60A'}].map(s=>(
             <div key={s.l} style={{flex:1,textAlign:'center'}}>
               <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.15em',color:C.muted,textTransform:'uppercase'}}>{s.l}</div>
@@ -1009,49 +1006,7 @@ function MapTab({ active, uploadedGPS, gpxMeta, onUploadConsumed, autoPlay, onAu
             </div>
           ))}
         </div>
-      </div>}
-
-      {/* GPX 메타데이터 카드 */}
-      {gpxMeta && coords.length > 0 && (
-        <div style={{background:C.card,borderRadius:14,padding:'14px 16px',border:`1px solid ${C.lime}33`}}>
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
-            <div style={{fontSize:13,fontWeight:900,color:C.white,letterSpacing:'-0.3px'}}>
-              {gpxMeta.name || 'GPX 경로'}
-            </div>
-            <div style={{fontSize:10,fontWeight:700,color:C.lime,letterSpacing:'0.12em',textTransform:'uppercase',background:`${C.lime}18`,borderRadius:20,padding:'3px 9px'}}>GPX</div>
-          </div>
-          <div style={{display:'flex',flexWrap:'wrap',gap:14}}>
-            {gpxMeta.dateStr && (
-              <div>
-                <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>DATE</div>
-                <div style={{fontSize:13,fontWeight:700,color:C.white}}>{gpxMeta.dateStr}</div>
-              </div>
-            )}
-            {gpxMeta.duration && (
-              <div>
-                <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>TIME</div>
-                <div style={{fontSize:13,fontWeight:700,color:C.white}}>{formatDuration(gpxMeta.duration)}</div>
-              </div>
-            )}
-            {gpxMeta.hasElevation && gpxMeta.elevGain > 0 && (
-              <div>
-                <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>ELEV ↑</div>
-                <div style={{fontSize:13,fontWeight:700,color:'#30D158'}}>{gpxMeta.elevGain}m</div>
-              </div>
-            )}
-            {gpxMeta.hasHR && gpxMeta.avgHR && (
-              <div>
-                <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>AVG HR</div>
-                <div style={{fontSize:13,fontWeight:700,color:C.red}}>❤ {gpxMeta.avgHR}bpm</div>
-              </div>
-            )}
-            <div>
-              <div style={{fontSize:9,fontWeight:800,letterSpacing:'0.14em',color:C.muted,textTransform:'uppercase'}}>POINTS</div>
-              <div style={{fontSize:13,fontWeight:700,color:C.muted}}>{gpxMeta.pointCount.toLocaleString()}</div>
-            </div>
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   )
 }
@@ -1397,28 +1352,24 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
    MAIN APP
 ───────────────────────────────────────── */
 export default function App() {
-  const [runs,        setRuns]        = useState([])
-  const [loading,     setLoading]     = useState(true)
-  const [tab,         setTab]         = useState(0)
-  const [showAdd,     setShowAdd]     = useState(false)
-  const [celebRun,    setCelebRun]    = useState(null)
-  const [error,       setError]       = useState('')
-  const [uploadedGPS, setUploadedGPS] = useState(null)
-  const [gpxMeta,     setGpxMeta]     = useState(null)
-  const [gpxStore,    setGpxStore]    = useState({})   // { 'YYYY-MM-DD': {coords, meta} }
-  const [routes,      setRoutes]      = useState({})   // JSONBin routes 미러: { 'YYYY-MM-DD': [[lat,lng],...] }
-  const [autoPlay,    setAutoPlay]    = useState(false)
+  const [runs,       setRuns]       = useState([])
+  const [loading,    setLoading]    = useState(true)
+  const [tab,        setTab]        = useState(0)
+  const [showAdd,    setShowAdd]    = useState(false)
+  const [celebRun,   setCelebRun]   = useState(null)
+  const [error,      setError]      = useState('')
+  const [gpxStore,   setGpxStore]   = useState({})   // { 'YYYY-MM-DD': {coords, meta} }
+  const [routes,     setRoutes]     = useState({})   // JSONBin routes 미러: { 'YYYY-MM-DD': [[lat,lng],...] }
+  const [routeModal, setRouteModal] = useState(null) // null | {coords, meta, autoPlay}
   const fileInputRef = useRef(null)
 
   // GPX를 세션 스토어 + localStorage에 저장하는 헬퍼
   const storeGPX = (coords, meta) => {
-    const date = meta.runEntry?.date
+    const date = meta?.runEntry?.date
     if (date) {
       setGpxStore(prev => ({ ...prev, [date]: { coords, meta } }))
       lsSaveGPX(date, coords)
     }
-    setUploadedGPS(JSON.stringify(coords.map(p => [p.lat, p.lng])))
-    setGpxMeta(meta)
   }
 
   const handleGPXUpload = (e) => {
@@ -1431,13 +1382,12 @@ export default function App() {
         if (isGPX) {
           const { coords, meta } = parseGPXFile(evt.target.result)
           storeGPX(coords, meta)
+          setRouteModal({ coords, meta, autoPlay: true })
         } else {
           const pts = parseXMLtoGPS(evt.target.result)
           if (pts.length < 2) throw new Error('좌표가 2개 미만입니다.')
-          setUploadedGPS(JSON.stringify(pts.map(p => [p.lat, p.lng])))
-          setGpxMeta(null)
+          setRouteModal({ coords: pts, meta: null, autoPlay: false })
         }
-        setTab(2)
         setError('')
       } catch (err) { setError(err.message) }
     }
@@ -1508,25 +1458,25 @@ export default function App() {
     return newOnly.length
   }
 
-  // 설정 탭에서 GPX 업로드
+  // 설정 탭에서 GPX 업로드 → 모달로 표시
   const handleGPXFromSettings = (coords, meta) => {
     storeGPX(coords, meta)
-    setTab(2)
+    setRouteModal({ coords, meta, autoPlay: false })
   }
 
-  // LOG 탭 "경로 보기" — gpxStore → localStorage 순으로 좌표 조회 후 MAP 탭 이동
+  // LOG 탭 "경로 보기" → 전체화면 모달
   const handleViewRoute = (date) => {
     const gpx = gpxLookup(gpxStore, date)
     if (gpx) {
       storeGPX(gpx.coords, gpx.meta)
+      setRouteModal({ coords: gpx.coords, meta: gpx.meta, autoPlay: true })
     } else {
       const coords = lsLoadGPXFuzzy(date)
       if (!coords) return
       const fakeMeta = { runEntry: { date }, name: null, dateStr: null, duration: null, elevGain: 0, avgHR: null, routeDist: 0, pointCount: coords.length, hasElevation: false, hasHR: false }
       storeGPX(coords, fakeMeta)
+      setRouteModal({ coords, meta: fakeMeta, autoPlay: true })
     }
-    setAutoPlay(true)
-    setTab(2)
   }
 
   return (
@@ -1556,8 +1506,7 @@ export default function App() {
           <>
             {tab===0&&<HomeTab runs={runs} onAdd={()=>setShowAdd(true)}/>}
             {tab===1&&<RecordsTab runs={runs} onAdd={()=>setShowAdd(true)} onDelete={handleDelete} gpxStore={gpxStore} onViewRoute={handleViewRoute}/>}
-            <div style={{display:tab===2?'block':'none'}}><MapTab active={tab===2} uploadedGPS={uploadedGPS} gpxMeta={gpxMeta} onUploadConsumed={()=>setUploadedGPS(null)} autoPlay={autoPlay} onAutoPlayDone={()=>setAutoPlay(false)}/></div>
-            {tab===3&&<StatsTab runs={runs}/>}
+            {tab===2&&<StatsTab runs={runs}/>}
             {tab===5&&<SettingsTab onImportRuns={handleImportRuns} onGPXLoad={handleGPXFromSettings}/>}
           </>
         )}
@@ -1580,6 +1529,9 @@ export default function App() {
 
       {/* 기록 추가 모달 */}
       {showAdd&&<AddRunModal onSave={handleAdd} onClose={()=>setShowAdd(false)}/>}
+
+      {/* 경로 전체화면 모달 */}
+      {routeModal&&<RouteModal coords={routeModal.coords} meta={routeModal.meta} autoPlay={routeModal.autoPlay} onClose={()=>setRouteModal(null)}/>}
 
       {/* 축하 오버레이 */}
       {celebRun&&<Celebration run={celebRun} onDone={()=>setCelebRun(null)}/>}
