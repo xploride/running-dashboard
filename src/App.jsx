@@ -65,7 +65,10 @@ function parseGPS(input) {
   })
 }
 function gradColor(t) {
-  const r = Math.round(48+(255-48)*t), g = Math.round(209+(214-209)*t), b = Math.round(88+(10-88)*t)
+  // 위성 지도에서 잘 보이는 시안 → 형광 노란색 그라데이션
+  const r = Math.round(t * 255)
+  const g = Math.round(255 - t * 10)
+  const b = Math.round((1 - t) * 230)
   return `rgb(${r},${g},${b})`
 }
 function seededRng(seed) {
@@ -635,7 +638,7 @@ function InlineRouteMap({ coords, meta }) {
   useEffect(() => {
     if (!mapRef.current) return
     const map = L.map(mapRef.current, { center:[37.5665,126.9780], zoom:13, zoomControl:false, attributionControl:false })
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom:19 }).addTo(map)
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom:19, attribution:'© Esri' }).addTo(map)
     mapObj.current = map
 
     const lls = coords.map(p => [p.lat, p.lng])
@@ -1036,8 +1039,8 @@ function RouteModal({ coords, meta, autoPlay, onClose }) {
   useEffect(() => {
     if (!mapRef.current) return
     const map = L.map(mapRef.current, { center:[37.5665,126.9780], zoom:13, zoomControl:false })
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
-      attribution:'© <a href="https://openstreetmap.org" style="color:#555">OSM</a> © <a href="https://carto.com" style="color:#555">CARTO</a>',maxZoom:19
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
+      attribution:'© Esri', maxZoom:19
     }).addTo(map)
     mapObj.current = map
 
