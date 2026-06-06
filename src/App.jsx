@@ -600,10 +600,143 @@ function RecentRunCard({ run }) {
 }
 
 /* ─────────────────────────────────────────
+   INLINE ROUTE MAP — 카드 내 아코디언 지도
+───────────────────────────────────────── */
+function InlineRouteMap({ coords, meta }) {
+  const mapRef      = useRef(null)
+  const mapObj      = useRef(null)
+  const bgLineRef   = useRef(null)
+  const gradSegsRef = useRef([])
+  const lastVisRef  = useRef(-1)
+  const runnerRef   = useRef(null)
+  const rafId       = useRef(null)
+  const progressRef = useRef(0)
+  const playingRef  = useRef(false)
+  const coordsRef   = useRef(coords)
+
+  const [playing,  setPlaying]  = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [speedIdx, setSpeedIdx] = useState(1)
+
+  const routeKm = useMemo(() => {
+    if (coords.length < 2) return 0
+    let d = 0
+    for (let i = 1; i < coords.length; i++)
+      d += haversine(coords[i-1].lat, coords[i-1].lng, coords[i].lat, coords[i].lng)
+    return parseFloat(d.toFixed(2))
+  }, [coords])
+
+  const showSegsUpTo = useCallback((n) => {
+    const segs = gradSegsRef.current, last = lastVisRef.current
+    if (n > last) { for (let i=last+1;i<=Math.min(n,segs.length-1);i++) segs[i].setStyle({opacity:1}); lastVisRef.current=Math.min(n,segs.length-1) }
+    else if (n < last) { for (let i=n+1;i<=last;i++) segs[i].setStyle({opacity:0}); lastVisRef.current=n }
+  }, [])
+
+  useEffect(() => {
+    if (!mapRef.current) return
+    const map = L.map(mapRef.current, { center:[37.5665,126.9780], zoom:13, zoomControl:false, attributionControl:false })
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom:19 }).addTo(map)
+    mapObj.current = map
+
+    const lls = coords.map(p => [p.lat, p.lng])
+    const n   = coords.length
+    bgLineRef.current = L.polyline(lls, {color:'#fff', weight:3, opacity:0.12, lineCap:'round', lineJoin:'round'}).addTo(map)
+    const segs = Math.min(GRAD_SEGS, n-1)
+    for (let i=0; i<segs; i++) {
+      const si=Math.floor(i*(n-1)/segs), ei=Math.floor((i+1)*(n-1)/segs)+1
+      const seg=L.polyline(coords.slice(si,Math.min(ei,n)).map(p=>[p.lat,p.lng]),
+        {color:gradColor(i/(segs-1)),weight:5,opacity:0,lineCap:'round',lineJoin:'round',smoothFactor:0}).addTo(map)
+      gradSegsRef.current.push(seg)
+    }
+    const ci = (c) => L.divIcon({html:`<div style="width:14px;height:14px;border-radius:50%;background:${c};border:2px solid #fff;box-shadow:0 0 8px ${c}88;"></div>`,className:'',iconSize:[14,14],iconAnchor:[7,7]})
+    L.marker(lls[0],   {icon:ci('#30D158'),zIndexOffset:100}).addTo(map)
+    L.marker(lls[n-1], {icon:ci('#FF453A'),zIndexOffset:100}).addTo(map)
+    runnerRef.current = L.marker(lls[0], {icon:L.divIcon({html:`<div class="rp-wrap"><div class="rp-ring rp-r1"></div><div class="rp-ring rp-r2"></div><div class="rp-ring rp-r3"></div><div class="rp-core"></div></div>`,className:'',iconSize:[40,40],iconAnchor:[20,20]}),zIndexOffset:1000}).addTo(map)
+    map.fitBounds(L.latLngBounds(lls), {padding:[28,28]})
+    setTimeout(() => map.invalidateSize(), 120)
+
+    return () => {
+      cancelAnimationFrame(rafId.current); playingRef.current=false
+      map.remove(); mapObj.current=null; bgLineRef.current=null
+      gradSegsRef.current=[]; lastVisRef.current=-1; runnerRef.current=null
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const doPlay = () => {
+    if (playingRef.current) return
+    if (progressRef.current >= 1) { progressRef.current=0; setProgress(0); showSegsUpTo(-1) }
+    playingRef.current=true; setPlaying(true)
+    const spd=ANIM_SPEEDS[speedIdx].value; let lastTs=null
+    const frame=(ts)=>{
+      if (!playingRef.current) return
+      if (!lastTs) lastTs=ts
+      const dt=Math.min(ts-lastTs,50); lastTs=ts
+      const total=coordsRef.current.length
+      progressRef.current=Math.min(progressRef.current+(spd*dt)/(ANIM_SECS_1X*1000),1)
+      const rawIdx=progressRef.current*(total-1),fi=Math.floor(rawIdx),frac=rawIdx-fi
+      if (fi<total-1) { const a=coordsRef.current[fi],b=coordsRef.current[fi+1]; runnerRef.current?.setLatLng([a.lat+(b.lat-a.lat)*frac,a.lng+(b.lng-a.lng)*frac]) }
+      showSegsUpTo(Math.floor(progressRef.current*(gradSegsRef.current.length-1)))
+      setProgress(progressRef.current)
+      if (progressRef.current<1) rafId.current=requestAnimationFrame(frame)
+      else { playingRef.current=false; setPlaying(false) }
+    }
+    rafId.current=requestAnimationFrame(frame)
+  }
+  const doPause = () => { playingRef.current=false; setPlaying(false); cancelAnimationFrame(rafId.current) }
+  const doReset = () => {
+    doPause(); progressRef.current=0; setProgress(0); showSegsUpTo(-1)
+    if (coordsRef.current.length) runnerRef.current?.setLatLng([coordsRef.current[0].lat,coordsRef.current[0].lng])
+  }
+  const doScrub = (e) => {
+    const rect=e.currentTarget.getBoundingClientRect()
+    const pct=Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width))
+    progressRef.current=pct; setProgress(pct)
+    const total=coordsRef.current.length; if (!total) return
+    const fi=Math.min(Math.floor(pct*(total-1)),total-2)
+    showSegsUpTo(Math.floor(pct*(gradSegsRef.current.length-1)))
+    runnerRef.current?.setLatLng([coordsRef.current[fi].lat,coordsRef.current[fi].lng])
+  }
+
+  const pctDone=Math.round(progress*100), kmDone=parseFloat((progress*routeKm).toFixed(2))
+
+  return (
+    <div onClick={e=>e.stopPropagation()} style={{animation:'slideDown .3s ease forwards'}}>
+      {/* 지도 */}
+      <div style={{position:'relative',borderRadius:'0 0 0 0',overflow:'hidden',height:300,marginLeft:-16,marginRight:-16}}>
+        <div ref={mapRef} style={{width:'100%',height:'100%'}}/>
+        <div style={{position:'absolute',bottom:8,left:8,background:'rgba(0,0,0,0.72)',borderRadius:10,padding:'5px 11px',fontSize:12,backdropFilter:'blur(8px)',zIndex:1000,display:'flex',alignItems:'center',gap:5}}>
+          <span style={{color:gradColor(progress),fontWeight:800}}>{kmDone}</span>
+          <span style={{color:'rgba(255,255,255,0.4)',fontSize:11}}>/ {routeKm} km</span>
+        </div>
+      </div>
+      {/* 컨트롤 */}
+      <div style={{background:C.card2,borderRadius:'0 0 12px 12px',padding:'10px 12px',marginLeft:-16,marginRight:-16,marginBottom:-14}}>
+        <div onClick={doScrub} style={{background:C.dim,borderRadius:3,height:4,marginBottom:10,cursor:'pointer',overflow:'hidden'}}>
+          <div style={{background:'linear-gradient(90deg,#30D158,#FFD60A)',height:'100%',width:`${pctDone}%`,borderRadius:3,transition:'width .05s linear'}}/>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:6}}>
+          <button onClick={doReset} style={{background:C.card,border:'none',borderRadius:8,width:36,height:36,color:C.muted,cursor:'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,WebkitTapHighlightColor:'transparent'}}>⏮</button>
+          <button onClick={playing?doPause:doPlay} style={{flex:1,background:playing?'#1c7a38':'#30D158',border:'none',borderRadius:10,height:36,color:'#000',cursor:'pointer',fontSize:18,fontWeight:900,display:'flex',alignItems:'center',justifyContent:'center',WebkitTapHighlightColor:'transparent'}}>
+            {playing?'⏸':progress>=1?'↺':'▶'}
+          </button>
+          <div style={{display:'flex',gap:3}}>
+            {ANIM_SPEEDS.map((s,i)=>(
+              <button key={i} onClick={()=>setSpeedIdx(i)} style={{background:speedIdx===i?'#30D158':C.card,border:'none',borderRadius:6,width:32,height:32,color:speedIdx===i?'#000':C.muted,cursor:'pointer',fontSize:11,fontWeight:800,WebkitTapHighlightColor:'transparent'}}>{s.label}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────
    RECORDS TAB (TIMELINE)
 ───────────────────────────────────────── */
-function RecordsTab({ runs, onAdd, onDelete, gpxStore, onViewRoute }) {
-  const [selectedIdx, setSelectedIdx] = useState(null)
+function RecordsTab({ runs, onAdd, onDelete, gpxStore }) {
+  const [selectedIdx,   setSelectedIdx]   = useState(null)
+  const [openRouteDate, setOpenRouteDate] = useState(null)
   const sorted = [...runs].reverse()
 
   // 월별 그룹
@@ -638,7 +771,18 @@ function RecordsTab({ runs, onAdd, onDelete, gpxStore, onViewRoute }) {
           {monthRuns.map((r,i)=>{
             const zone = getPaceZone(r.pace)
             const sel  = selectedIdx===r._origIdx
+            const isMapOpen = openRouteDate===r.date
             const dateLabel = new Date(r.date).toLocaleDateString('ko-KR',{month:'numeric',day:'numeric',weekday:'short'})
+
+            // 아코디언 지도용 좌표 로드
+            const loadRouteCoords = () => {
+              const gpx = gpxLookup(gpxStore, r.date)
+              if (gpx) return { coords: gpx.coords, meta: gpx.meta }
+              const coords = lsLoadGPXFuzzy(r.date)
+              if (coords) return { coords, meta:{ runEntry:{date:r.date},name:null } }
+              return null
+            }
+
             return (
               <div key={i} onClick={()=>setSelectedIdx(sel?null:r._origIdx)}
                 style={{display:'flex',alignItems:'stretch',marginBottom:8,gap:0}}>
@@ -648,7 +792,7 @@ function RecordsTab({ runs, onAdd, onDelete, gpxStore, onViewRoute }) {
                   <div style={{width:1,flex:1,background:C.border,marginTop:4}}/>
                 </div>
                 {/* 카드 */}
-                <div style={{flex:1,background:sel?'#1A1A0A':C.card,borderRadius:16,padding:'14px 16px',border:`1px solid ${sel?C.lime:C.border}`,transition:'all .15s',cursor:'pointer'}}>
+                <div style={{flex:1,background:sel?'#1A1A0A':C.card,borderRadius:isMapOpen?'16px 16px 0 0':16,padding:'14px 16px',border:`1px solid ${sel?C.lime:isMapOpen?C.lime+'66':C.border}`,transition:'border-color .15s',cursor:'pointer',overflow:'hidden'}}>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
                     <div>
                       <div style={{display:'flex',alignItems:'center',gap:5}}>
@@ -669,11 +813,11 @@ function RecordsTab({ runs, onAdd, onDelete, gpxStore, onViewRoute }) {
                   </div>
                   {r.note&&<div style={{color:C.muted,fontSize:12,marginTop:8,fontStyle:'italic'}}>"{r.note}"</div>}
 
-                  {/* 경로 보기 영역 — GPX 기록 판별 후 상태별 UI */}
+                  {/* 경로 보기 영역 */}
                   {(()=>{
                     const hasLS   = lsHasGPXFuzzy(r.date)
                     const hasSess = !!gpxLookup(gpxStore, r.date)
-                    const isGPX   = r.source === 'gpx' || hasLS || hasSess
+                    const isGPX   = r.source==='gpx' || hasLS || hasSess
                     if (!isGPX) return null
                     if (!hasLS && !hasSess) return (
                       <div style={{marginTop:10,background:`${C.orange}15`,border:`1px solid ${C.orange}33`,borderRadius:10,padding:'9px 12px',color:C.muted,fontSize:12,display:'flex',alignItems:'center',gap:6}}>
@@ -681,11 +825,21 @@ function RecordsTab({ runs, onAdd, onDelete, gpxStore, onViewRoute }) {
                       </div>
                     )
                     return (
-                      <button
-                        onPointerDown={e=>{e.stopPropagation();e.preventDefault();onViewRoute(r.date)}}
-                        style={{marginTop:10,width:'100%',minHeight:44,background:`${C.lime}18`,border:`1px solid ${C.lime}55`,borderRadius:10,padding:'11px 9px',color:C.lime,fontSize:12,fontWeight:800,letterSpacing:'0.08em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent',touchAction:'manipulation',userSelect:'none',WebkitUserSelect:'none',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
-                        {hasLS ? '📍' : '▶'} 경로 보기
-                      </button>
+                      <>
+                        <button
+                          onPointerDown={e=>{
+                            e.stopPropagation(); e.preventDefault()
+                            setOpenRouteDate(isMapOpen ? null : r.date)
+                          }}
+                          style={{marginTop:10,width:'100%',minHeight:40,background:isMapOpen?`${C.lime}28`:`${C.lime}14`,border:`1px solid ${isMapOpen?C.lime+'88':C.lime+'44'}`,borderRadius:isMapOpen?'10px 10px 0 0':10,padding:'9px',color:C.lime,fontSize:12,fontWeight:800,letterSpacing:'0.06em',textTransform:'uppercase',cursor:'pointer',WebkitTapHighlightColor:'transparent',touchAction:'manipulation',userSelect:'none',WebkitUserSelect:'none',display:'flex',alignItems:'center',justifyContent:'center',gap:5,transition:'all .15s'}}>
+                          {isMapOpen ? '▲ 닫기' : <>{hasLS?'📍':'▶'} 경로 보기</>}
+                        </button>
+                        {isMapOpen && (()=>{
+                          const data = loadRouteCoords()
+                          if (!data) return null
+                          return <InlineRouteMap key={r.date} coords={data.coords} meta={data.meta}/>
+                        })()}
+                      </>
                     )
                   })()}
 
@@ -1464,20 +1618,6 @@ export default function App() {
     setRouteModal({ coords, meta, autoPlay: false })
   }
 
-  // LOG 탭 "경로 보기" → 전체화면 모달
-  const handleViewRoute = (date) => {
-    const gpx = gpxLookup(gpxStore, date)
-    if (gpx) {
-      storeGPX(gpx.coords, gpx.meta)
-      setRouteModal({ coords: gpx.coords, meta: gpx.meta, autoPlay: true })
-    } else {
-      const coords = lsLoadGPXFuzzy(date)
-      if (!coords) return
-      const fakeMeta = { runEntry: { date }, name: null, dateStr: null, duration: null, elevGain: 0, avgHR: null, routeDist: 0, pointCount: coords.length, hasElevation: false, hasHR: false }
-      storeGPX(coords, fakeMeta)
-      setRouteModal({ coords, meta: fakeMeta, autoPlay: true })
-    }
-  }
 
   return (
     <div style={{minHeight:'100dvh',background:C.bg,color:C.white,fontFamily:'-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif',display:'flex',flexDirection:'column',paddingBottom:'calc(62px + env(safe-area-inset-bottom))'}}>
@@ -1505,7 +1645,7 @@ export default function App() {
         ) : (
           <>
             {tab===0&&<HomeTab runs={runs} onAdd={()=>setShowAdd(true)}/>}
-            {tab===1&&<RecordsTab runs={runs} onAdd={()=>setShowAdd(true)} onDelete={handleDelete} gpxStore={gpxStore} onViewRoute={handleViewRoute}/>}
+            {tab===1&&<RecordsTab runs={runs} onAdd={()=>setShowAdd(true)} onDelete={handleDelete} gpxStore={gpxStore}/>}
             {tab===2&&<StatsTab runs={runs}/>}
             {tab===5&&<SettingsTab onImportRuns={handleImportRuns} onGPXLoad={handleGPXFromSettings}/>}
           </>
@@ -1538,6 +1678,7 @@ export default function App() {
 
       <style>{`
         @keyframes slideUp   { from { transform: translateY(100%) } to { transform: translateY(0) } }
+        @keyframes slideDown { from { opacity:0; transform:translateY(-6px) } to { opacity:1; transform:translateY(0) } }
         @keyframes confFall  { 0% { transform: translateY(0) rotate(0deg); opacity:1 } 100% { transform: translateY(110vh) rotate(720deg); opacity:0 } }
         @keyframes celeb-in  { 0% { transform: scale(.8) translateY(20px); opacity:0 } 100% { transform: scale(1) translateY(0); opacity:1 } }
         @keyframes pulse     { 0%,100% { opacity:.4 } 50% { opacity:1 } }
