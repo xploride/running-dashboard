@@ -639,6 +639,7 @@ function InlineRouteMap({ coords, meta }) {
     if (!mapRef.current) return
     const map = L.map(mapRef.current, { center:[37.5665,126.9780], zoom:13, zoomControl:false, attributionControl:false })
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom:19, attribution:'© Esri' }).addTo(map)
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19, opacity:0.4, attribution:'© OSM' }).addTo(map)
     mapObj.current = map
 
     const lls = coords.map(p => [p.lat, p.lng])
@@ -1042,6 +1043,7 @@ function RouteModal({ coords, meta, autoPlay, onClose }) {
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
       attribution:'© Esri', maxZoom:19
     }).addTo(map)
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{ maxZoom:19, opacity:0.4, attribution:'© OSM' }).addTo(map)
     mapObj.current = map
 
     const lls = coords.map(p=>[p.lat,p.lng])
