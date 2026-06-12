@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, AreaChart, Area } from 'recharts'
 
 /* ─────────────────────────────────────────
    DESIGN TOKENS
@@ -332,6 +332,34 @@ function parseXMLtoGPS(xmlText) {
 
   throw new Error('지원 형식: GPX (.gpx), Apple Health XML, KML (.kml)')
 }
+// Apple Shortcuts 운동 데이터 → RunEntry 변환
+// distance 단위: 100 초과 시 m로 간주해 km 변환, 그 이하는 km 그대로
+function convertShortcutWorkout(w) {
+  const start   = new Date(w.startDate)
+  const end     = new Date(w.endDate)
+  const timeSec = Math.max(0, Math.round((end - start) / 1000))
+
+  let distKm = parseFloat(w.distance) || 0
+  if (distKm > 100) distKm = parseFloat((distKm / 1000).toFixed(2))
+  else distKm = parseFloat(distKm.toFixed(2))
+
+  const paceMin = (timeSec > 0 && distKm > 0)
+    ? parseFloat((timeSec / 60 / distKm).toFixed(2)) : 0
+
+  const KST_OFFSET = 9 * 60 * 60 * 1000
+  const date = new Date(start.getTime() + KST_OFFSET).toISOString().slice(0, 10)
+
+  return {
+    date,
+    distance: distKm,
+    pace:     paceMin,
+    hr:       0,
+    calories: Math.round(parseFloat(w.calories) || 0),
+    note:     '⌚ Apple Watch',
+    source:   'shortcut',
+  }
+}
+
 function calcStreak(runs) {
   if (!runs.length) return 0
   const sorted = [...new Set(runs.map(r=>r.date))].sort().reverse()
@@ -377,6 +405,62 @@ function MiniRoute({ date, w=80, h=50 }) {
       <circle cx={pts[0][0]} cy={pts[0][1]} r="3" fill={C.lime}/>
       <circle cx={pts[n-1][0]} cy={pts[n-1][1]} r="3" fill={C.orange}/>
     </svg>
+  )
+}
+
+/* ─────────────────────────────────────────
+   PACE MINI CHART (LOG 카드용)
+───────────────────────────────────────── */
+function PaceMiniChart({ coords, date }) {
+  const gradId = `paceGrad-${date?.replace(/-/g, '') || 'x'}`
+
+  const paceData = useMemo(() => {
+    if (!coords?.length || !coords.some(p => p.time)) return null
+    const data = []
+    let segDist = 0, segStartIdx = 0, km = 1
+    for (let i = 1; i < coords.length; i++) {
+      segDist += haversine(coords[i-1].lat, coords[i-1].lng, coords[i].lat, coords[i].lng)
+      if (segDist >= 1.0) {
+        const t1 = coords[segStartIdx]?.time ? new Date(coords[segStartIdx].time).getTime() : null
+        const t2 = coords[i]?.time ? new Date(coords[i].time).getTime() : null
+        if (t1 && t2 && t2 > t1) {
+          const pace = parseFloat(((t2 - t1) / 1000 / 60 / segDist).toFixed(2))
+          if (pace > 1 && pace < 20) data.push({ km: `${km}K`, pace })
+        }
+        km++; segDist = 0; segStartIdx = i
+      }
+    }
+    return data.length >= 2 ? data : null
+  }, [coords])
+
+  if (!paceData) return null
+
+  const paceVals = paceData.map(d => d.pace)
+  const minP = Math.min(...paceVals), maxP = Math.max(...paceVals)
+  const pad = Math.max((maxP - minP) * 0.3, 0.3)
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.15em', color: C.muted, textTransform: 'uppercase', marginBottom: 2 }}>PACE / KM</div>
+      <ResponsiveContainer width="100%" height={56}>
+        <AreaChart data={paceData} margin={{ left: -28, right: 4, top: 2, bottom: 0 }}>
+          <XAxis dataKey="km" tick={{ fill: C.muted, fontSize: 8, fontWeight: 700 }} axisLine={false} tickLine={false} />
+          <YAxis reversed domain={[minP - pad, maxP + pad]} hide />
+          <Tooltip
+            contentStyle={{ background: C.card2, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 11, padding: '4px 10px' }}
+            formatter={v => [paceToStr(v), 'PACE']}
+            labelStyle={{ color: C.muted, fontSize: 9 }}
+          />
+          <defs>
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor={C.lime} stopOpacity={0.2} />
+              <stop offset="95%" stopColor={C.lime} stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <Area type="monotone" dataKey="pace" stroke={C.lime} strokeWidth={1.5} fill={`url(#${gradId})`} dot={false} />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
   )
 }
 
@@ -816,6 +900,13 @@ function RecordsTab({ runs, onAdd, onDelete, gpxStore }) {
                     </div>}
                   </div>
                   {r.note&&<div style={{color:C.muted,fontSize:12,marginTop:8,fontStyle:'italic'}}>"{r.note}"</div>}
+
+                  {/* 페이스 그래프 — GPS+타임스탬프 있을 때 */}
+                  {(()=>{
+                    const gpxData = gpxLookup(gpxStore, r.date)
+                    const coords = gpxData?.coords
+                    return coords?.some(p => p.time) ? <PaceMiniChart coords={coords} date={r.date} /> : null
+                  })()}
 
                   {/* 경로 보기 영역 */}
                   {(()=>{
@@ -1559,8 +1650,24 @@ export default function App() {
     try {
       const res  = await fetch(JSONBIN_URL+'/latest',{headers:{'X-Master-Key':API_KEY}})
       const data = await res.json()
-      const runsData   = data.record?.runs   || []
-      const routesData = data.record?.routes || {}
+      const record     = data.record || {}
+      let runsData     = record.runs   || []
+      const routesData = record.routes || {}
+      const pending    = record.pendingWorkouts || []
+
+      // 단축어 대기 운동 처리
+      if (pending.length > 0) {
+        const converted = pending
+          .filter(w => ['달리기','Running'].includes(w.workoutType))
+          .map(convertShortcutWorkout)
+        const existing = new Set(runsData.map(r=>`${r.date}_${Math.round(r.distance*10)}`))
+        const newOnly  = converted.filter(r=>!existing.has(`${r.date}_${Math.round(r.distance*10)}`))
+        if (newOnly.length > 0)
+          runsData = [...runsData, ...newOnly].sort((a,b)=>a.date.localeCompare(b.date))
+        // 처리 완료 → pendingWorkouts 비우고 저장
+        await fetch(JSONBIN_URL,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':API_KEY},body:JSON.stringify({runs:runsData,routes:routesData,pendingWorkouts:[]})})
+      }
+
       setRuns(runsData)
       setRoutes(routesData)
 
@@ -1576,7 +1683,7 @@ export default function App() {
   },[])
 
   const saveData = async (newRuns, newRoutes) => {
-    const res = await fetch(JSONBIN_URL,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':API_KEY},body:JSON.stringify({runs:newRuns,routes:newRoutes})})
+    const res = await fetch(JSONBIN_URL,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':API_KEY},body:JSON.stringify({runs:newRuns,routes:newRoutes,pendingWorkouts:[]})})
     if(!res.ok) throw new Error('저장 실패')
   }
 
