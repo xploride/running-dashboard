@@ -332,32 +332,64 @@ function parseXMLtoGPS(xmlText) {
 
   throw new Error('지원 형식: GPX (.gpx), Apple Health XML, KML (.kml)')
 }
-// Apple Shortcuts 운동 데이터 → RunEntry 변환
-// distance 단위: 100 초과 시 m로 간주해 km 변환, 그 이하는 km 그대로
+// Apple Shortcuts 운동 샘플 객체 → RunEntry 변환
+// Shortcuts 워크아웃 객체는 키 이름이 버전·언어마다 달라 다중 키를 시도함
 function convertShortcutWorkout(w) {
-  const start   = new Date(w.startDate)
-  const end     = new Date(w.endDate)
-  const timeSec = Math.max(0, Math.round((end - start) / 1000))
+  if (!w || typeof w !== 'object') return null
 
-  let distKm = parseFloat(w.distance) || 0
-  if (distKm > 100) distKm = parseFloat((distKm / 1000).toFixed(2))
-  else distKm = parseFloat(distKm.toFixed(2))
-
-  const paceMin = (timeSec > 0 && distKm > 0)
-    ? parseFloat((timeSec / 60 / distKm).toFixed(2)) : 0
-
-  const KST_OFFSET = 9 * 60 * 60 * 1000
-  const date = new Date(start.getTime() + KST_OFFSET).toISOString().slice(0, 10)
-
-  return {
-    date,
-    distance: distKm,
-    pace:     paceMin,
-    hr:       0,
-    calories: Math.round(parseFloat(w.calories) || 0),
-    note:     '⌚ Apple Watch',
-    source:   'shortcut',
+  // 숫자 추출 — 순수 숫자 또는 {value, unit} 형태 모두 처리
+  function num(v) {
+    if (v == null || v === '') return 0
+    if (typeof v === 'number') return v
+    if (typeof v === 'object' && v.value != null) return parseFloat(v.value) || 0
+    return parseFloat(v) || 0
   }
+
+  // 날짜 파싱 — ISO 8601 및 Shortcuts가 만드는 다양한 포맷 허용
+  function parseD(v) {
+    if (!v) return null
+    const d = new Date(v)
+    return isNaN(d.getTime()) ? null : d
+  }
+
+  // 시작/종료 날짜: 여러 키 이름 시도
+  const start = parseD(w.startDate ?? w['Start Date'] ?? w.start_date ?? w.StartDate)
+  const end   = parseD(w.endDate   ?? w['End Date']   ?? w.end_date   ?? w.EndDate)
+  if (!start) return null   // 날짜 없으면 파싱 불가
+
+  // 소요 시간: end-start 또는 duration 키 활용
+  let timeSec = end ? Math.max(0, Math.round((end - start) / 1000)) : 0
+  if (timeSec === 0) {
+    const dur = num(w.duration ?? w['Duration'])
+    // Shortcuts는 보통 분 단위로 제공; 3600 이하면 분으로 간주
+    timeSec = dur > 0 ? (dur < 3600 ? Math.round(dur * 60) : Math.round(dur)) : 0
+  }
+
+  // 거리: 여러 키 시도 → 100 초과 시 m → km 변환
+  const rawDist = num(w.distance ?? w['Distance'] ?? w.totalDistance ?? w['Total Distance'])
+  const distUnit = (
+    w.distanceUnit ?? w['Distance Unit'] ??
+    (typeof w.distance === 'object' ? w.distance?.unit : '') ?? ''
+  ).toString().toLowerCase()
+  let distKm = rawDist
+  if (distUnit === 'm' || distUnit === 'meter' || distUnit === 'meters' || distKm > 100) {
+    distKm = parseFloat((distKm / 1000).toFixed(2))
+  } else {
+    distKm = parseFloat(distKm.toFixed(2))
+  }
+  if (distKm <= 0) return null   // 거리 없으면 무효
+
+  const paceMin = timeSec > 0 ? parseFloat((timeSec / 60 / distKm).toFixed(2)) : 0
+  const calories = Math.round(num(
+    w.calories ?? w['Calories'] ?? w['Energy Burned'] ??
+    w.totalEnergyBurned ?? w['Total Energy Burned'] ?? w.activeEnergyBurned
+  ))
+
+  // KST(+9h) 기준 날짜 추출
+  const KST = 9 * 60 * 60 * 1000
+  const date = new Date(start.getTime() + KST).toISOString().slice(0, 10)
+
+  return { date, distance: distKm, pace: paceMin, hr: 0, calories, note: '⌚ Apple Watch', source: 'shortcut' }
 }
 
 function calcStreak(runs) {
@@ -1655,11 +1687,14 @@ export default function App() {
       const routesData = record.routes || {}
       const pending    = record.pendingWorkouts || []
 
-      // 단축어 대기 운동 처리
-      if (pending.length > 0) {
-        const converted = pending
-          .filter(w => ['달리기','Running'].includes(w.workoutType))
+      // 단축어 대기 운동 처리 — 빈 항목 제외 후 변환
+      const validPending = pending.filter(w =>
+        w && typeof w === 'object' && Object.keys(w).length > 0
+      )
+      if (validPending.length > 0) {
+        const converted = validPending
           .map(convertShortcutWorkout)
+          .filter(Boolean)                        // null 변환 결과 제외
         const existing = new Set(runsData.map(r=>`${r.date}_${Math.round(r.distance*10)}`))
         const newOnly  = converted.filter(r=>!existing.has(`${r.date}_${Math.round(r.distance*10)}`))
         if (newOnly.length > 0)
