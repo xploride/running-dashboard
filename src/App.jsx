@@ -1362,7 +1362,7 @@ function AddRunModal({ onSave, onClose }) {
 /* ─────────────────────────────────────────
    SETTINGS TAB
 ───────────────────────────────────────── */
-function SettingsTab({ onImportRuns, onGPXLoad, onStoreGPX }) {
+function SettingsTab({ onImportRuns, onGPXLoad }) {
   const [claudeKey,     setClaudeKey]     = useState(()=>localStorage.getItem('claudeKey')||'')
   const [healthPreview, setHealthPreview] = useState(null)   // {runs,total,dateRange,totalKm}
   const [gpxPreview,    setGpxPreview]    = useState(null)   // {coords,meta}
@@ -1407,24 +1407,23 @@ function SettingsTab({ onImportRuns, onGPXLoad, onStoreGPX }) {
     e.target.value = ''
   }
 
-  /* GPX 저장 — 통계만 JSONBin에 저장, GPS 좌표는 localStorage에만 저장
-     routeEntry를 JSONBin에 보내면 수천 포인트로 100KB 초과 → PUT 실패하는 버그 방지 */
+  /* GPX 저장 — 통계 + 소수점 4자리 압축 coords를 JSONBin에 저장 (localStorage 미사용) */
   const confirmGPXSave = async () => {
     if (!gpxPreview) return
     setImporting(true)
     setFileError('')
     try {
-      // 1. GPS 좌표 → localStorage (JSONBin에 넣지 않음)
-      onStoreGPX(gpxPreview.coords, gpxPreview.meta)
-      // 2. 통계만 JSONBin에 저장 (routeEntry 없음)
-      const added = await onImportRuns([gpxPreview.meta.runEntry])
+      const { coords, meta } = gpxPreview
+      console.log('[GPX save] date:', meta.runEntry.date, 'dist:', meta.runEntry.distance, 'points:', coords.length)
+      const routeEntry = { date: meta.runEntry.date, coords, meta }
+      const added = await onImportRuns([meta.runEntry], routeEntry)
+      console.log('[GPX save] done, added:', added)
       setImportResult({ added, total: 1, type: 'gpx' })
       setGpxPreview(null)
-      const msg = added > 0 ? '✅ 저장 완료' : '⚠️ 이미 존재하는 기록'
-      setSaveToast(msg)
+      setSaveToast(added > 0 ? '✅ 저장 완료' : '⚠️ 이미 존재하는 기록')
       setTimeout(() => setSaveToast(''), 2500)
     } catch (err) {
-      console.error('[confirmGPXSave]', err)
+      console.error('[GPX save] error:', err)
       setFileError(`저장 실패: ${err.message}`)
     }
     finally { setImporting(false) }
@@ -1686,13 +1685,10 @@ export default function App() {
   const [routeModal, setRouteModal] = useState(null) // null | {coords, meta, autoPlay}
   const fileInputRef = useRef(null)
 
-  // GPX를 세션 스토어 + localStorage에 저장하는 헬퍼
+  // GPX를 세션 스토어에 저장하는 헬퍼 (localStorage 미사용)
   const storeGPX = (coords, meta) => {
     const date = meta?.runEntry?.date
-    if (date) {
-      setGpxStore(prev => ({ ...prev, [date]: { coords, meta } }))
-      lsSaveGPX(date, coords)
-    }
+    if (date) setGpxStore(prev => ({ ...prev, [date]: { coords, meta } }))
   }
 
   const handleGPXUpload = (e) => {
@@ -1825,21 +1821,26 @@ export default function App() {
     setRuns(newRuns)
   }
 
-  // Apple Health import — 중복 제거 후 병합. routeEntry가 있으면 coords도 함께 저장
+  // Apple Health import — 중복 제거 후 병합. routeEntry가 있으면 coords를 JSONBin routes에 저장
   const handleImportRuns = async (importedRuns, routeEntry = null) => {
     const existing = new Set(runs.map(r=>`${r.date}_${Math.round(r.distance*10)}`))
     const newOnly  = importedRuns.filter(r=>!existing.has(`${r.date}_${Math.round(r.distance*10)}`))
+    console.log('[import] runs in state:', runs.length, '| existing keys:', [...existing])
+    console.log('[import] incoming:', importedRuns.map(r=>`${r.date}_${Math.round(r.distance*10)}`))
+    console.log('[import] newOnly:', newOnly.length, '| routeEntry:', !!routeEntry)
     const merged   = [...runs, ...newOnly].sort((a,b)=>a.date.localeCompare(b.date))
     let newRoutes  = routes
     if (routeEntry) {
-      const { date, coords } = routeEntry
+      const { date, coords, meta: routeMeta } = routeEntry
+      // 소수점 4자리 압축 — 원본 coords는 세션 gpxStore에만 보관
       const compressed = coords.map(p => [
         Math.round(p.lat * 1e4) / 1e4,
         Math.round(p.lng * 1e4) / 1e4,
       ])
       newRoutes = { ...routes, [date]: compressed }
       setRoutes(newRoutes)
-      setGpxStore(prev => ({ ...prev, [date]: { coords, meta: { runEntry:{ date }, name:null, dateStr:null, duration:null, elevGain:0, avgHR:null, routeDist:0, pointCount:coords.length, hasElevation:false, hasHR:false } } }))
+      // 세션용 gpxStore: 전체 정밀도 좌표 + 파싱된 메타 유지
+      setGpxStore(prev => ({ ...prev, [date]: { coords, meta: routeMeta || { runEntry:{ date }, name:null, dateStr:null, duration:null, elevGain:0, avgHR:null, routeDist:0, pointCount:coords.length, hasElevation:false, hasHR:false } } }))
     }
     await saveData(merged, newRoutes)
     setRuns(merged)
@@ -1881,7 +1882,7 @@ export default function App() {
             {tab===0&&<HomeTab runs={runs} onAdd={()=>setShowAdd(true)}/>}
             {tab===1&&<RecordsTab runs={runs} onAdd={()=>setShowAdd(true)} onDelete={handleDelete} gpxStore={gpxStore}/>}
             {tab===2&&<StatsTab runs={runs}/>}
-            {tab===5&&<SettingsTab onImportRuns={handleImportRuns} onGPXLoad={handleGPXFromSettings} onStoreGPX={storeGPX}/>}
+            {tab===5&&<SettingsTab onImportRuns={handleImportRuns} onGPXLoad={handleGPXFromSettings}/>}
           </>
         )}
       </div>
