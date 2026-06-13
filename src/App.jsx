@@ -34,9 +34,12 @@ const PACE_ZONES = [
   { label: '전력',  min: 0,   max: 4.0, color: C.red,    en: 'MAX'      },
 ]
 
-const BIN_ID      = '6a212290da38895dfe84f187'
-const API_KEY     = '$2a$10$S4L4AI6Ixu.mcfT/xS3q4.37HRowJYcmydaG/Ib41bUflr2jIC.lS'
-const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`
+const BIN_ID          = '6a212290da38895dfe84f187'
+const WORKOUT_BIN_ID  = '6a2c9d7af5f4af5e29e99ac9'
+const API_KEY         = '$2a$10$S4L4AI6Ixu.mcfT/xS3q4.37HRowJYcmydaG/Ib41bUflr2jIC.lS'
+const JSONBIN_URL     = `https://api.jsonbin.io/v3/b/${BIN_ID}`
+const WORKOUT_BIN_URL = `https://api.jsonbin.io/v3/b/${WORKOUT_BIN_ID}`
+const WORKOUT_BIN_EMPTY = { distance: 0, calories: 0, startDate: '', endDate: '', activityType: '' }
 const ANIM_SPEEDS = [{ label:'1×',value:1},{label:'3×',value:3},{label:'10×',value:10},{label:'30×',value:30}]
 const ANIM_SECS_1X = 20
 const GRAD_SEGS    = 80
@@ -1702,6 +1705,46 @@ export default function App() {
         // 처리 완료 → pendingWorkouts 비우고 저장
         await fetch(JSONBIN_URL,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':API_KEY},body:JSON.stringify({runs:runsData,routes:routesData,pendingWorkouts:[]})})
       }
+
+      // ── 워크아웃 전용 BIN 처리 ────────────────────────────────────────
+      try {
+        const wRes  = await fetch(WORKOUT_BIN_URL+'/latest',{headers:{'X-Master-Key':API_KEY}})
+        const wData = await wRes.json()
+        const w     = wData.record || {}
+
+        // startDate가 있고 distance > 0 일 때만 처리
+        if (w.startDate && w.startDate !== '' && parseFloat(w.distance) > 0) {
+          const KST   = 9 * 60 * 60 * 1000
+          const start = new Date(w.startDate)
+          const end   = new Date(w.endDate)
+          const date  = new Date(start.getTime() + KST).toISOString().slice(0, 10)
+
+          // 같은 날짜가 이미 있으면 추가 안 함
+          const isDuplicate = runsData.some(r => r.date === date)
+          if (!isDuplicate) {
+            const distKm  = parseFloat(parseFloat(w.distance).toFixed(2))
+            const timeSec = !isNaN(end) ? Math.max(0, Math.round((end - start) / 1000)) : 0
+            const paceMin = timeSec > 0 && distKm > 0
+              ? parseFloat((timeSec / 60 / distKm).toFixed(2)) : 0
+
+            const newRun = {
+              date,
+              distance: distKm,
+              pace:     paceMin,
+              hr:       0,
+              calories: Math.round(parseFloat(w.calories) || 0),
+              note:     '⌚ Apple Watch',
+              source:   'shortcut',
+            }
+            runsData = [...runsData, newRun].sort((a,b)=>a.date.localeCompare(b.date))
+            // 메인 BIN에 새 run 반영
+            await fetch(JSONBIN_URL,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':API_KEY},body:JSON.stringify({runs:runsData,routes:routesData,pendingWorkouts:[]})})
+          }
+
+          // 중복이든 신규든 워크아웃 BIN 초기화
+          await fetch(WORKOUT_BIN_URL,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':API_KEY},body:JSON.stringify(WORKOUT_BIN_EMPTY)})
+        }
+      } catch { /* 워크아웃 BIN 처리 실패는 무시 */ }
 
       setRuns(runsData)
       setRoutes(routesData)
