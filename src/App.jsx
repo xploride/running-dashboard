@@ -1362,7 +1362,7 @@ function AddRunModal({ onSave, onClose }) {
 /* ─────────────────────────────────────────
    SETTINGS TAB
 ───────────────────────────────────────── */
-function SettingsTab({ onImportRuns, onGPXLoad }) {
+function SettingsTab({ onImportRuns, onGPXLoad, onStoreGPX }) {
   const [claudeKey,     setClaudeKey]     = useState(()=>localStorage.getItem('claudeKey')||'')
   const [healthPreview, setHealthPreview] = useState(null)   // {runs,total,dateRange,totalKm}
   const [gpxPreview,    setGpxPreview]    = useState(null)   // {coords,meta}
@@ -1407,19 +1407,26 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
     e.target.value = ''
   }
 
-  /* GPX 저장 — 요약 통계 + 좌표(4자리 압축) 모두 JSONBin에 저장 */
+  /* GPX 저장 — 통계만 JSONBin에 저장, GPS 좌표는 localStorage에만 저장
+     routeEntry를 JSONBin에 보내면 수천 포인트로 100KB 초과 → PUT 실패하는 버그 방지 */
   const confirmGPXSave = async () => {
     if (!gpxPreview) return
     setImporting(true)
+    setFileError('')
     try {
-      const routeEntry = { date: gpxPreview.meta.runEntry.date, coords: gpxPreview.coords }
-      const added = await onImportRuns([gpxPreview.meta.runEntry], routeEntry)
+      // 1. GPS 좌표 → localStorage (JSONBin에 넣지 않음)
+      onStoreGPX(gpxPreview.coords, gpxPreview.meta)
+      // 2. 통계만 JSONBin에 저장 (routeEntry 없음)
+      const added = await onImportRuns([gpxPreview.meta.runEntry])
       setImportResult({ added, total: 1, type: 'gpx' })
       setGpxPreview(null)
       const msg = added > 0 ? '✅ 저장 완료' : '⚠️ 이미 존재하는 기록'
       setSaveToast(msg)
       setTimeout(() => setSaveToast(''), 2500)
-    } catch (err) { setFileError(err.message) }
+    } catch (err) {
+      console.error('[confirmGPXSave]', err)
+      setFileError(`저장 실패: ${err.message}`)
+    }
     finally { setImporting(false) }
   }
 
@@ -1595,6 +1602,12 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
                 {importing ? '저장 중...' : '저장'}
               </button>
             </div>
+          </div>
+        )}
+
+        {fileError && !healthPreview && (
+          <div style={{marginTop:10,background:`${C.red}18`,borderRadius:10,padding:'10px 14px',color:C.red,fontSize:12,lineHeight:1.6}}>
+            {fileError}
           </div>
         )}
 
@@ -1786,8 +1799,14 @@ export default function App() {
   },[])
 
   const saveData = async (newRuns, newRoutes) => {
-    const res = await fetch(JSONBIN_URL,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':API_KEY},body:JSON.stringify({runs:newRuns,routes:newRoutes,pendingWorkouts:[]})})
-    if(!res.ok) throw new Error('저장 실패')
+    const body = JSON.stringify({ runs: newRuns, routes: newRoutes, pendingWorkouts: [] })
+    console.log('[saveData] payload:', Math.round(body.length / 1024), 'KB,', newRuns.length, 'runs,', Object.keys(newRoutes).length, 'routes')
+    const res = await fetch(JSONBIN_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Master-Key': API_KEY }, body })
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '')
+      console.error('[saveData] failed:', res.status, errText)
+      throw new Error(`저장 실패 (HTTP ${res.status})`)
+    }
   }
 
   useEffect(()=>{ fetchRuns() },[fetchRuns])
@@ -1862,7 +1881,7 @@ export default function App() {
             {tab===0&&<HomeTab runs={runs} onAdd={()=>setShowAdd(true)}/>}
             {tab===1&&<RecordsTab runs={runs} onAdd={()=>setShowAdd(true)} onDelete={handleDelete} gpxStore={gpxStore}/>}
             {tab===2&&<StatsTab runs={runs}/>}
-            {tab===5&&<SettingsTab onImportRuns={handleImportRuns} onGPXLoad={handleGPXFromSettings}/>}
+            {tab===5&&<SettingsTab onImportRuns={handleImportRuns} onGPXLoad={handleGPXFromSettings} onStoreGPX={storeGPX}/>}
           </>
         )}
       </div>
