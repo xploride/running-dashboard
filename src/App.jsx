@@ -1370,6 +1370,7 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
   const [importResult,  setImportResult]  = useState(null)   // {added,total,type}
   const [fileError,     setFileError]     = useState('')
   const [parsing,       setParsing]       = useState(false)
+  const [saveToast,     setSaveToast]     = useState('')     // 저장 완료 토스트
 
   const healthRef = useRef(null)
   const gpxRef    = useRef(null)
@@ -1406,16 +1407,18 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
     e.target.value = ''
   }
 
-  /* GPX 저장 + 지도 표시 — 요약 통계 + 좌표(4자리 압축) 모두 JSONBin에 저장 */
-  const confirmGPXSave = async (sendToMap) => {
+  /* GPX 저장 — 요약 통계 + 좌표(4자리 압축) 모두 JSONBin에 저장 */
+  const confirmGPXSave = async () => {
     if (!gpxPreview) return
     setImporting(true)
     try {
-      if (sendToMap) onGPXLoad(gpxPreview.coords, gpxPreview.meta)
       const routeEntry = { date: gpxPreview.meta.runEntry.date, coords: gpxPreview.coords }
       const added = await onImportRuns([gpxPreview.meta.runEntry], routeEntry)
       setImportResult({ added, total: 1, type: 'gpx' })
       setGpxPreview(null)
+      const msg = added > 0 ? '✅ 저장 완료' : '⚠️ 이미 존재하는 기록'
+      setSaveToast(msg)
+      setTimeout(() => setSaveToast(''), 2500)
     } catch (err) { setFileError(err.message) }
     finally { setImporting(false) }
   }
@@ -1587,9 +1590,9 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
                 style={{...sBtn(C.card2, C.white), flex:1, border:`1px solid ${C.border}`}}>
                 지도만 보기
               </button>
-              <button onClick={()=>confirmGPXSave(true)} disabled={importing}
+              <button onClick={confirmGPXSave} disabled={importing}
                 style={{...sBtn(), flex:2, opacity: importing ? 0.7 : 1}}>
-                {importing ? '저장 중...' : '저장 + 지도'}
+                {importing ? '저장 중...' : '저장'}
               </button>
             </div>
           </div>
@@ -1607,6 +1610,28 @@ function SettingsTab({ onImportRuns, onGPXLoad }) {
             </div>
           </div>
         )}
+
+      {/* 저장 완료 토스트 */}
+      {saveToast && (
+        <div style={{
+          position: 'fixed',
+          bottom: 'calc(62px + env(safe-area-inset-bottom) + 20px)',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: saveToast.startsWith('✅') ? '#30D158' : C.orange,
+          color: '#000',
+          fontWeight: 900,
+          fontSize: 14,
+          padding: '10px 22px',
+          borderRadius: 99,
+          zIndex: 500,
+          whiteSpace: 'nowrap',
+          animation: 'slideUp .2s ease',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+        }}>
+          {saveToast}
+        </div>
+      )}
       </div>
 
       {/* ── Claude API Key ── */}
