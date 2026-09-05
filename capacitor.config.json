@@ -1,0 +1,12 @@
+{
+  "appId": "com.xploride.running",
+  "appName": "Running",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "ios": {
+    "contentInset": "automatic",
+    "preferredContentMode": "mobile"
+  }
+}
