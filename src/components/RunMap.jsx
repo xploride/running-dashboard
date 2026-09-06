@@ -72,7 +72,7 @@ export default function RunMap({ route, autoPlay = false }) {
     if (!containerRef.current || mapRef.current) return undefined
     const map = new Map({
       container: containerRef.current,
-      style: 'https://tiles.openfreemap.org/styles/positron',
+      style: 'https://tiles.openfreemap.org/styles/bright',
       center: [126.978, 37.5665],
       zoom: 11,
       pitch: 0,
