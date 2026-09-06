@@ -72,10 +72,10 @@ export default function RunMap({ route, autoPlay = false }) {
     if (!containerRef.current || mapRef.current) return undefined
     const map = new Map({
       container: containerRef.current,
-      style: 'https://tiles.openfreemap.org/styles/fiord',
+      style: 'https://tiles.openfreemap.org/styles/positron',
       center: [126.978, 37.5665],
       zoom: 11,
-      pitch: 28,
+      pitch: 0,
       attributionControl: true,
     })
     map.addControl(new NavigationControl({ showCompass: false }), 'top-right')
@@ -190,25 +190,14 @@ export default function RunMap({ route, autoPlay = false }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, route?.id])
 
-  if (!route) {
-    return (
-      <div className="map-empty">
-        <div className="map-empty__grid" />
-        <p className="eyebrow">ROUTE LAB</p>
-        <h2>달린 길을<br />다시 보세요.</h2>
-        <p>GPX 파일을 불러오면 경로가 이 세션에서만 안전하게 표시됩니다.</p>
-      </div>
-    )
-  }
-
   return (
-    <div className="run-map-shell">
+    <div className={`run-map-shell${route ? '' : ' run-map-shell--empty'}`}>
       <div ref={containerRef} className="run-map" />
-      <div className="map-overlay map-overlay--top">
+      {route&&<div className="map-overlay map-overlay--top">
         <span className="map-route-label">{route.run?.note || 'RUN ROUTE'}</span>
         <strong>{metrics.total.toFixed(2)} KM</strong>
-      </div>
-      <div className="map-player">
+      </div>}
+      {route&&<div className="map-player">
         <div className="map-progress-track" onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect()
           const next = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
@@ -226,7 +215,7 @@ export default function RunMap({ route, autoPlay = false }) {
           </button>
           <span className="map-player__percent">{Math.round(progress * 100)}%</span>
         </div>
-      </div>
+      </div>}
     </div>
   )
 }
