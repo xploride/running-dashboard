@@ -14,7 +14,22 @@ import {
 } from './lib/runData'
 import './App.css'
 
-const RunMap = lazy(() => import('./components/RunMap'))
+const MAP_RELOAD_KEY = 'running-map-chunk-reload'
+const RunMap = lazy(async () => {
+  try {
+    const module = await import('./components/RunMap')
+    sessionStorage.removeItem(MAP_RELOAD_KEY)
+    return module
+  } catch (error) {
+    if (!sessionStorage.getItem(MAP_RELOAD_KEY)) {
+      sessionStorage.setItem(MAP_RELOAD_KEY, '1')
+      window.location.reload()
+      return new Promise(() => {})
+    }
+    sessionStorage.removeItem(MAP_RELOAD_KEY)
+    throw error
+  }
+})
 
 const WEEK_GOAL = 40
 const TABS = [
