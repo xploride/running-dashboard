@@ -179,10 +179,19 @@ public class HealthKitPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func runObject(from workout: HKWorkout) -> JSObject {
-        let distanceMeters = workout.statistics(for: distanceType)?.sumQuantity()?.doubleValue(for: .meter()) ?? 0
-        let calories = workout.statistics(for: energyType)?.sumQuantity()?.doubleValue(for: .kilocalorie()) ?? 0
-        let heartUnit = HKUnit.count().unitDivided(by: .minute())
-        let heartRate = workout.statistics(for: heartRateType)?.averageQuantity()?.doubleValue(for: heartUnit) ?? 0
+        let distanceMeters: Double
+        let calories: Double
+        let heartRate: Double
+        if #available(iOS 16.0, *) {
+            distanceMeters = workout.statistics(for: distanceType)?.sumQuantity()?.doubleValue(for: .meter()) ?? 0
+            calories = workout.statistics(for: energyType)?.sumQuantity()?.doubleValue(for: .kilocalorie()) ?? 0
+            let heartUnit = HKUnit.count().unitDivided(by: .minute())
+            heartRate = workout.statistics(for: heartRateType)?.averageQuantity()?.doubleValue(for: heartUnit) ?? 0
+        } else {
+            distanceMeters = workout.totalDistance?.doubleValue(for: .meter()) ?? 0
+            calories = workout.totalEnergyBurned?.doubleValue(for: .kilocalorie()) ?? 0
+            heartRate = 0
+        }
         let distanceKm = distanceMeters / 1000
         let startedAt = ISO8601DateFormatter().string(from: workout.startDate)
         return [
