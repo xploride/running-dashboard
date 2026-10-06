@@ -1,6 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk'
 
+const NATIVE_ORIGINS = new Set(['capacitor://localhost', 'ionic://localhost'])
+
 export default async function handler(request, response) {
+  const origin = request.headers.origin
+  if (NATIVE_ORIGINS.has(origin)) {
+    response.setHeader('Access-Control-Allow-Origin', origin)
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+    response.setHeader('Vary', 'Origin')
+  }
+  if (request.method === 'OPTIONS') return response.status(204).end()
   if (request.method !== 'POST') return response.status(405).json({ error: 'POST 요청만 지원합니다.' })
   if (!process.env.ANTHROPIC_API_KEY) return response.status(503).json({ error: 'AI 코치가 아직 연결되지 않았습니다.' })
 

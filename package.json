@@ -1,7 +1,7 @@
 {
   "name": "running-dashboard",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,6 +15,7 @@
     "@anthropic-ai/sdk": "^0.100.1",
     "@capacitor/core": "^8.5.1",
     "@capacitor/ios": "^8.5.1",
+    "@capacitor/preferences": "^8.0.1",
     "@running/healthkit": "file:plugins/healthkit",
     "lucide-react": "^1.41.0",
     "maplibre-gl": "^6.7.0",

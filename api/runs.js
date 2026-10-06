@@ -15,7 +15,7 @@ function jsonbinHeaders(key) {
 }
 
 function cleanRun(run, index) {
-  const allowed = ['id', 'date', 'distance', 'duration', 'pace', 'hr', 'calories', 'elevation', 'note', 'source']
+  const allowed = ['id', 'date', 'startedAt', 'distance', 'duration', 'pace', 'hr', 'calories', 'elevation', 'note', 'source']
   return allowed.reduce((output, key) => {
     if (run[key] !== undefined) output[key] = run[key]
     return output

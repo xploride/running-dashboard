@@ -2,15 +2,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "RunningHealthKit",
+    name: "RunningHealthkit",
     platforms: [.iOS(.v15)],
-    products: [.library(name: "RunningHealthKit", targets: ["RunningHealthKit"])],
+    products: [.library(name: "RunningHealthkit", targets: ["RunningHealthkit"])],
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", from: "8.0.0")
     ],
     targets: [
         .target(
-            name: "RunningHealthKit",
+            name: "RunningHealthkit",
             dependencies: [
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "Cordova", package: "capacitor-swift-pm")

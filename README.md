@@ -1,23 +1,25 @@
 # Running / Move with intent
 
-모바일 우선 러닝 대시보드입니다. 러닝 요약은 JSONBin에 저장하고, GPX 좌표는 현재 브라우저 탭의 세션에만 보관합니다. 지도는 MapLibre GL JS와 OpenFreeMap을 사용합니다.
+모바일 우선 러닝 대시보드이자 App Store용 iOS 앱입니다. 웹에서는 러닝 요약을 JSONBin에 저장하고, iOS 앱에서는 사용자 기기에만 저장합니다. GPX 및 운동 경로 좌표는 서버로 보내지 않고 현재 세션에만 보관합니다. 지도는 MapLibre GL JS와 OpenFreeMap을 사용합니다.
 
 ## 핵심 기능
 
 - 주간 목표, 최근 러닝, 월간 통계, 페이스 추세와 구간 분석
 - GPX 파싱, 날짜 기반 기록 연결, 경로 애니메이션
 - Apple 건강 `export.xml` 러닝 요약 가져오기
-- iOS 앱에서 선택한 러닝과 경로를 Apple HealthKit에 저장
+- Apple Watch 및 Apple 건강의 러닝·운동 경로 가져오기
+- iOS 앱에서 선택한 러닝과 GPX 경로를 Apple HealthKit에 저장
 - AI 코치와 로컬 기본 코칭
 - 설치 가능한 PWA와 모바일 하단 내비게이션
 
 ## 데이터 원칙
 
-- JSONBin 저장: 날짜, 거리, 시간, 페이스, 평균 심박수, 칼로리, 메모, 출처
-- 세션 저장: GPX 좌표
+- 웹 JSONBin 저장: 날짜, 시작 시각, 거리, 시간, 페이스, 평균 심박수, 칼로리, 메모, 출처
+- iOS 기기 저장: 동일한 러닝 요약
+- 세션 저장: GPX 및 Apple 건강 운동 경로 좌표
 - 저장하지 않음: GPX 원본, 위치 좌표, JSONBin 키
 
-JSONBin 요청은 브라우저가 아닌 `/api/runs` 서버 함수에서 처리합니다. `X-Master-Key`는 서버에서만 추가되므로 클라이언트 번들에 키가 포함되지 않습니다.
+JSONBin 요청은 브라우저가 아닌 `/api/runs` 서버 함수에서 처리합니다. `X-Master-Key`는 서버에서만 추가되므로 클라이언트 번들에 키가 포함되지 않습니다. iOS 네이티브 앱은 JSONBin을 사용하지 않습니다.
 
 ## 로컬 실행
 
@@ -63,6 +65,7 @@ Xcode에서 다음만 완료합니다.
 2. HealthKit capability가 표시되는지 확인합니다. 없으면 `+ Capability`에서 HealthKit을 추가합니다.
 3. Bundle Identifier `com.xploride.running`이 계정에서 사용 가능하지 않으면 고유한 값으로 변경합니다.
 4. 실제 iPhone을 연결해 빌드하고 건강 접근을 허용합니다. HealthKit 쓰기는 시뮬레이터보다 실제 기기 검증이 적합합니다.
-5. 앱의 Runs 화면에서 `건강 저장`을 눌러 Apple 건강의 운동 기록과 경로를 확인합니다.
+5. 앱 설정의 `APPLE 건강 동기화`에서 Apple Watch 러닝을 가져옵니다.
+6. 기록 화면에서 `건강 저장`을 눌러 GPX 또는 수동 기록이 Apple 건강에 저장되는지 확인합니다.
 
 서명과 HealthKit capability 활성화에는 Apple Developer 계정과 macOS/Xcode가 필요합니다. Windows에서는 웹 빌드와 iOS 프로젝트 생성·동기화까지만 가능합니다.

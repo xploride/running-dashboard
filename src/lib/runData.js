@@ -13,9 +13,11 @@ export function normalizeRun(run, index = 0) {
   const distance = Number(run.distance) || 0
   const pace = Number(run.pace) || 0
   const duration = Number(run.duration) || Math.round(distance * pace * 60)
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(run.date || '') ? run.date : localDateKey(run.date)
   return {
     id: run.id || `${run.date || 'run'}-${distance.toFixed(2)}-${index}`,
-    date: run.date || localDateKey(),
+    date: date || localDateKey(),
+    startedAt: run.startedAt || '',
     distance,
     duration,
     pace: pace || (distance > 0 && duration > 0 ? duration / 60 / distance : 0),
@@ -103,10 +105,11 @@ export function parseGpx(text, fileName = 'route.gpx') {
   const roundedDistance = Number(distance.toFixed(2))
 
   return {
-    coords: points.map(({ lat, lng }) => ({ lat, lng })),
+    coords: points.map(({ lat, lng, elevation, time }) => ({ lat, lng, elevation, time })),
     run: normalizeRun({
       id: `gpx-${date}-${start}`,
       date,
+      startedAt: new Date(start).toISOString(),
       distance: roundedDistance,
       duration,
       pace: roundedDistance && duration ? duration / 60 / roundedDistance : 0,
@@ -147,6 +150,7 @@ export function parseAppleHealth(text) {
     return normalizeRun({
       id: `health-${Date.parse(startDate) || index}`,
       date: localDateKey(startDate),
+      startedAt: Number.isFinite(Date.parse(startDate)) ? new Date(startDate).toISOString() : '',
       distance: Number(distance.toFixed(2)),
       duration: Math.round(duration),
       pace: distance > 0 ? duration / 60 / distance : 0,
@@ -192,4 +196,3 @@ export function weeklyDistance(runs, now = new Date()) {
   start.setDate(start.getDate() - day)
   return runs.filter((run) => new Date(`${run.date}T12:00:00`) >= start).reduce((sum, run) => sum + run.distance, 0)
 }
-
