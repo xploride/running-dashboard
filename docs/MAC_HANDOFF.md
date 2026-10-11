@@ -1,15 +1,16 @@
-# RUNNING/03 iOS 출시 인계
+# Simply Run iOS 출시 인계
 
 ## 현재 상태
 
 - GitHub 저장소: `https://github.com/xploride/running-dashboard`
 - 기준 브랜치: `master`
-- iOS 앱 이름: `RUNNING/03`
+- iOS 앱 이름: `Simply Run` (`심플리런`)
 - Bundle ID: `com.xploride.running`
 - React/Vite 및 Capacitor iOS 프로젝트 생성 완료
 - Apple HealthKit 러닝 읽기, 운동 저장, 운동 경로 읽기·쓰기 구현 완료
 - HealthKit entitlement, 권한 설명, 개인정보 매니페스트 적용 완료
-- iOS 기록 요약은 기기 로컬 저장, GPS 좌표는 세션에만 저장
+- iOS 기록 요약과 GPS 경로는 기기 로컬 저장
+- Google AdMob Simply Run 앱과 홈 네이티브·인사이트 보상형 광고 단위 연결 완료
 - Xcode 26.6 / iOS 26.5 SDK의 서명 없는 시뮬레이터 빌드 성공
 - Vercel 프로덕션 및 개인정보 처리방침·지원 페이지 배포 완료
 
@@ -28,7 +29,7 @@ npm run ios:open
 2. Bundle Identifier가 App Store Connect의 App ID와 일치하는지 확인한다.
 3. HealthKit capability와 `App.entitlements`가 적용됐는지 확인한다.
 4. 실제 iPhone에서 Apple 건강 권한, Apple Watch 러닝 가져오기, GPX 운동 저장과 경로 저장을 테스트한다.
-5. 버전 `1.0.0`, 빌드 `1`을 확인한다.
+5. 버전 `1.0.0`, 빌드 `2`를 확인한다.
 6. Product > Archive > Validate App을 실행한다.
 7. App Store Connect에 업로드하고 TestFlight에서 설치·검증한다.
 8. `docs/APP_STORE_RELEASE.md`의 메타데이터와 개인정보 응답을 사용해 심사를 제출한다.

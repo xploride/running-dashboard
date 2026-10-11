@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, ArrowRight, Bot, CalendarDays, ChevronRight, CirclePlus,
   Flame, Footprints, Gauge, HeartPulse, Home, Import, LoaderCircle,
@@ -6,11 +6,12 @@ import {
   ShieldCheck, Trash2, Upload, X, Zap,
 } from 'lucide-react'
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { askCoach, getRuns, putRuns } from './lib/api'
+import { askCoach, getRoutes, getRuns, putRoutes, putRuns } from './lib/api'
+import { createHomeNativeAd, initializeAds, showAdPrivacyOptions, showRewardedInsightAd } from './lib/ads'
 import { authorizeHealthKit, isNativeHealthAvailable, readHealthKitRuns, saveRunToHealth } from './lib/healthkit'
 import {
-  durationText, loadSessionRoutes, localDateKey, mergeRuns, normalizeRun,
-  paceText, parseAppleHealth, parseGpx, saveSessionRoutes, weeklyDistance,
+  durationText, localDateKey, mergeRuns, normalizeRun,
+  paceText, parseAppleHealth, parseGpx, weeklyDistance,
 } from './lib/runData'
 import './App.css'
 
@@ -83,10 +84,23 @@ function EmptyState({ title, text }) {
   return <div className="empty-state"><Footprints size={28}/><strong>{title}</strong><p>{text}</p></div>
 }
 
-function HomeView({ runs, routes, onAdd, onRoute }) {
+function HomeView({ runs, routes, onAdd, onRoute, adsReady }) {
   const stats = useRunStats(runs)
   const recent = [...runs].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3)
   const goal = Math.min(100, (stats.weekDistance / WEEK_GOAL) * 100)
+  const recentListRef=useRef(null)
+  const [nativeAdStatus,setNativeAdStatus]=useState('idle')
+  useEffect(()=>{
+    if(!adsReady||!recentListRef.current||recent.length<1){setNativeAdStatus('idle');return undefined}
+    let feed
+    let disposed=false
+    setNativeAdStatus('loading')
+    createHomeNativeAd(recentListRef.current,{
+      onLoaded:()=>{if(!disposed)setNativeAdStatus('loaded')},
+      onFailed:()=>{if(!disposed)setNativeAdStatus('failed')},
+    }).then((created)=>{if(disposed)created.destroy();else{feed=created;created.invalidateLayout().catch(()=>{})}}).catch(()=>{if(!disposed)setNativeAdStatus('failed')})
+    return()=>{disposed=true;feed?.destroy()}
+  },[adsReady,recent.length])
   return <div className="view home-view">
     <section className="home-hero">
       <div className="home-hero__top"><div><p className="eyebrow">THIS WEEK</p><h1>이번 주 러닝</h1></div><span className="streak"><Flame size={15} fill="currentColor"/> {runs.filter((run)=>weeklyDistance([run])>0).length} RUNS</span></div>
@@ -98,7 +112,7 @@ function HomeView({ runs, routes, onAdd, onRoute }) {
     <button className="primary-action" onClick={onAdd}><CirclePlus size={21}/> LOG A RUN <ArrowRight size={19}/></button>
     <section className="section-block">
       <div className="section-heading"><div><p className="eyebrow">LATEST EFFORTS</p><h2>최근 러닝</h2></div><span>{runs.length} TOTAL</span></div>
-      {recent.length ? <div className="recent-list">{recent.map((run) => <button key={run.id} className="recent-run" onClick={() => onRoute(run.date)}><RouteSketch coords={routes[run.date]?.coords}/><div className="recent-run__body"><span>{formatDate(run.date, { month:'long',day:'numeric',weekday:'short' })}</span><strong>{run.distance.toFixed(2)} KM</strong><small>{paceText(run.pace)} /KM · {durationText(run.duration)}</small></div><ChevronRight size={20}/></button>)}</div> : <EmptyState title="첫 러닝을 기록하세요" text="수동 입력하거나 GPX와 Apple 건강 기록을 가져올 수 있습니다."/>}
+      {recent.length ? <div className="recent-list" ref={recentListRef}>{recent.map((run,index) => <Fragment key={run.id}><button className="recent-run" onClick={() => onRoute(run.date)}><RouteSketch coords={routes[run.date]?.coords}/><div className="recent-run__body"><span>{formatDate(run.date, { month:'long',day:'numeric',weekday:'short' })}</span><strong>{run.distance.toFixed(2)} KM</strong><small>{paceText(run.pace)} /KM · {durationText(run.duration)}</small></div><ChevronRight size={20}/></button>{index===0&&adsReady&&<capacitor-admob-native class={`native-ad-slot native-ad-slot--${nativeAdStatus}`} feed-id="simply-run-home-feed" slot-key="home-after-first-run"><span>AD · SPONSORED</span><strong>{nativeAdStatus==='failed'?'광고를 불러오지 못했어요':'광고 불러오는 중'}</strong>{nativeAdStatus==='failed'&&<small>새로고침하면 다시 시도합니다.</small>}</capacitor-admob-native>}</Fragment>)}</div> : <EmptyState title="첫 러닝을 기록하세요" text="수동 입력하거나 GPX와 Apple 건강 기록을 가져올 수 있습니다."/>}
     </section>
   </div>
 }
@@ -135,8 +149,19 @@ function localCoach(runs) {
   return `최근 ${recent.length}회 평균은 ${avg.toFixed(1)}km입니다. 다음 러닝은 ${Math.max(3,avg*.8).toFixed(1)}km를 편안하게 달리고, 마지막 5분만 리듬을 올려보세요.${fast?` 최근 최고 페이스는 ${paceText(fast.pace)}/km입니다.`:''}`
 }
 
-function InsightsView({ runs }) {
-  const [question,setQuestion]=useState(''),[answer,setAnswer]=useState(''),[asking,setAsking]=useState(false),[showConsent,setShowConsent]=useState(false)
+function detailedCoach(runs) {
+  if (!runs.length) return '상세 분석을 시작하려면 먼저 러닝을 한 번 기록해 주세요. 첫 목표는 20~30분 편안한 러닝 주 3회가 좋습니다.'
+  const recent=[...runs].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,8)
+  const total=recent.reduce((sum,run)=>sum+run.distance,0)
+  const longest=recent.reduce((best,run)=>run.distance>best.distance?run:best,recent[0])
+  const paced=recent.filter((run)=>run.pace>0)
+  const average=total/recent.length
+  const averagePace=paced.length?paced.reduce((sum,run)=>sum+run.pace,0)/paced.length:0
+  return `최근 ${recent.length}회에 ${total.toFixed(1)}km를 달렸고, 1회 평균은 ${average.toFixed(1)}km입니다. 가장 긴 러닝은 ${longest.distance.toFixed(1)}km였어요.${averagePace?` 평균 페이스는 ${paceText(averagePace)}/km입니다.`:''} 다음 주에는 편안한 러닝 2회와 ${Math.max(3,average*.8).toFixed(1)}km 리듬 러닝 1회를 배치하고, 강한 날 사이에는 최소 하루를 쉬어 주세요.`
+}
+
+function InsightsView({ runs, adsReady }) {
+  const [question,setQuestion]=useState(''),[answer,setAnswer]=useState(''),[asking,setAsking]=useState(false),[showConsent,setShowConsent]=useState(false),[rewardLoading,setRewardLoading]=useState(false),[rewardError,setRewardError]=useState('')
   const stats=useRunStats(runs)
   const chart=[...runs].sort((a,b)=>a.date.localeCompare(b.date)).filter((run)=>run.pace>0).slice(-12).map((run)=>({date:run.date.slice(5),pace:Number(run.pace.toFixed(2))}))
   const zones=[{label:'RECOVERY',min:6.5,color:'#6f7780'},{label:'EASY',min:5.7,color:'#44d681'},{label:'TEMPO',min:4.8,color:'#ffe24a'},{label:'SPEED',min:0,color:'#ff6838'}].map((zone,index,all)=>({...zone,count:runs.filter((run)=>run.pace>=zone.min&&(index===0||run.pace<all[index-1].min)).length}))
@@ -144,25 +169,32 @@ function InsightsView({ runs }) {
   const ask=async()=>{setAsking(true);const result=await askCoach(question,runs);setAnswer(result.answer||localCoach(runs));setAsking(false)}
   const submit=()=>{if(!question.trim())return;if(!localStorage.getItem('running-dashboard.ai-consent.v1')){setShowConsent(true);return}ask()}
   const acceptConsent=()=>{localStorage.setItem('running-dashboard.ai-consent.v1','1');setShowConsent(false);ask()}
+  const unlockDetailed=async()=>{
+    setRewardLoading(true);setRewardError('')
+    try{await showRewardedInsightAd();setAnswer(detailedCoach(runs))}
+    catch{setRewardError('광고를 끝까지 보면 상세 분석이 열립니다. 잠시 후 다시 시도해 주세요.')}
+    finally{setRewardLoading(false)}
+  }
   return <div className="view">
     <header className="view-title"><div><p className="eyebrow">TRAIN SMARTER</p><h1>러닝 분석</h1><span>페이스와 꾸준함의 흐름을 확인하세요.</span></div><Sparkles className="title-icon"/></header>
     <section className="insight-band"><p className="eyebrow">10 WEEK CONSISTENCY</p><Heatmap runs={runs}/></section>
     <section className="insight-grid"><Metric label="MONTH" value={stats.monthDistance.toFixed(1)} unit="KM" tone="metric--large"/><Metric label="AVERAGE" value={paceText(stats.averagePace)} unit="/KM" tone="metric--lime"/></section>
     <section className="chart-section"><div className="section-heading"><div><p className="eyebrow">PACE TREND</p><h2>Faster goes up</h2></div></div><div className="pace-chart"><ResponsiveContainer width="100%" height="100%" initialDimension={{width:500,height:190}}><AreaChart data={chart} margin={{top:16,right:4,left:-28,bottom:0}}><defs><linearGradient id="paceFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#b8ff34" stopOpacity=".35"/><stop offset="1" stopColor="#b8ff34" stopOpacity="0"/></linearGradient></defs><XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill:'#70757d',fontSize:10}}/><YAxis reversed domain={['dataMin - 0.3','dataMax + 0.3']} axisLine={false} tickLine={false} tick={{fill:'#70757d',fontSize:10}} tickFormatter={paceText}/><Tooltip contentStyle={{background:'#17191c',border:'1px solid #2b2e33',borderRadius:10}} formatter={(value)=>[`${paceText(value)}/km`,'Pace']}/><Area type="monotone" dataKey="pace" stroke="#b8ff34" strokeWidth={3} fill="url(#paceFill)"/></AreaChart></ResponsiveContainer></div></section>
     <section className="zone-section"><div className="section-heading"><div><p className="eyebrow">INTENSITY MIX</p><h2>Pace zones</h2></div></div>{zones.map((zone)=><div className="zone-row" key={zone.label}><span>{zone.label}</span><div><i style={{width:`${(zone.count/maxZone)*100}%`,background:zone.color}}/></div><strong>{zone.count}</strong></div>)}</section>
+    <section className="rewarded-insight"><div><p className="eyebrow">DETAILED INSIGHT</p><h2>내 러닝을 더 자세히 분석</h2><p>짧은 광고를 끝까지 보면 최근 기록을 바탕으로 한 상세 분석이 열립니다.</p>{rewardError&&<small>{rewardError}</small>}</div><button onClick={unlockDetailed} disabled={!adsReady||rewardLoading}>{rewardLoading?<LoaderCircle className="spin"/>:<Sparkles/>}{rewardLoading?'광고 불러오는 중':adsReady?'광고 보고 상세 분석':'광고 준비 중'}</button></section>
     <section className="coach-panel"><div className="coach-panel__title"><Bot size={22}/><div><p className="eyebrow">RUN COACH</p><h2>Ask one useful question.</h2></div></div><p className="coach-answer">{answer||localCoach(runs)}</p><div className="coach-input"><input value={question} onChange={(event)=>setQuestion(event.target.value)} onKeyDown={(event)=>event.key==='Enter'&&submit()} placeholder="이번 주 훈련을 어떻게 구성할까?"/><button onClick={submit} disabled={asking}>{asking?<LoaderCircle className="spin"/>:<ArrowRight/>}</button></div></section>
     {showConsent&&<div className="consent-backdrop"><section className="consent-sheet" role="dialog" aria-modal="true" aria-labelledby="ai-consent-title"><ShieldCheck/><p className="eyebrow">PRIVATE BY DEFAULT</p><h2 id="ai-consent-title">AI 코치 데이터 전송</h2><p>질문과 최근 20개의 러닝 요약을 답변 생성에 사용합니다. GPX 경로 좌표는 전송하지 않습니다.</p><div><button onClick={()=>setShowConsent(false)}>취소</button><button onClick={acceptConsent}>동의하고 보내기</button></div><a href="/privacy.html" target="_blank" rel="noreferrer">개인정보 처리방침</a></section></div>}
   </div>
 }
 
-function SettingsView({ onHealthImport, onGpxImport, syncing, nativeHealth, onHealthSync }) {
+function SettingsView({ onHealthImport, onGpxImport, syncing, nativeHealth, onHealthSync, onAdPrivacy, adsReady }) {
   const healthRef=useRef(null),gpxRef=useRef(null)
   return <div className="view">
     <header className="view-title"><div><p className="eyebrow">CONTROL CENTER</p><h1>설정 및 연결</h1><span>데이터 가져오기와 기기 연결을 관리하세요.</span></div></header>
-    <section className="settings-list"><button onClick={()=>healthRef.current?.click()}><span className="settings-icon"><HeartPulse/></span><span><strong>Apple 건강 가져오기</strong><small>export.xml · 러닝 요약만 저장</small></span><Upload/></button><input ref={healthRef} hidden type="file" accept=".xml,text/xml,application/xml" onChange={onHealthImport}/><button onClick={()=>gpxRef.current?.click()}><span className="settings-icon"><Route/></span><span><strong>GPX 경로 연결</strong><small>좌표는 현재 브라우저 세션에만 보관</small></span><Upload/></button><input ref={gpxRef} hidden type="file" onChange={onGpxImport}/></section>
-    <section className="privacy-band"><span><Gauge/></span><div><p className="eyebrow">PRIVACY BY DESIGN</p><h2>경로는 기기에만.</h2><p>{nativeHealth?'iOS 앱의 러닝 기록과 경로는 이 기기에만 보관합니다. AI 코치를 직접 사용할 때만 좌표를 제외한 최근 러닝 요약을 전송합니다.':'웹에서는 러닝 요약만 JSONBin에 저장합니다. GPS 좌표는 탭을 닫으면 사라집니다.'}</p><button onClick={()=>window.open('/privacy.html','_blank','noopener')}><ShieldCheck size={16}/> 개인정보 처리방침</button></div></section>
+    <section className="settings-list"><button onClick={()=>healthRef.current?.click()}><span className="settings-icon"><HeartPulse/></span><span><strong>Apple 건강 가져오기</strong><small>export.xml · 러닝 요약만 저장</small></span><Upload/></button><input ref={healthRef} hidden type="file" accept=".xml,text/xml,application/xml" onChange={onHealthImport}/><button onClick={()=>gpxRef.current?.click()}><span className="settings-icon"><Route/></span><span><strong>GPX 경로 연결</strong><small>좌표와 경로를 기기에 안전하게 저장</small></span><Upload/></button><input ref={gpxRef} hidden type="file" onChange={onGpxImport}/></section>
+    <section className="privacy-band"><span><Gauge/></span><div><p className="eyebrow">PRIVACY BY DESIGN</p><h2>경로는 기기에만.</h2><p>{nativeHealth?'iOS 앱의 러닝 기록과 경로는 이 기기에만 보관합니다. AI 코치를 직접 사용할 때만 좌표를 제외한 최근 러닝 요약을 전송합니다. 건강·경로 데이터는 광고 맞춤화에 사용하지 않습니다.':'웹에서는 러닝 요약만 JSONBin에 저장합니다. GPS 좌표는 탭을 닫으면 사라집니다.'}</p><div className="privacy-actions"><button onClick={()=>window.open('/privacy.html','_blank','noopener')}><ShieldCheck size={16}/> 개인정보 처리방침</button>{nativeHealth&&<button disabled={!adsReady} onClick={onAdPrivacy}><Gauge size={16}/> 광고 개인정보 설정</button>}</div></div></section>
     <section className="native-band"><span><CalendarDays/></span><div><p className="eyebrow">APPLE HEALTHKIT</p><h2>{nativeHealth?'Apple Watch 동기화':'iOS 앱 전용 기능'}</h2><p>{nativeHealth?'Apple 건강의 최근 러닝과 경로를 가져오고, 선택한 러닝을 Apple 건강에 저장합니다.':'웹에서는 건강 데이터에 직접 접근할 수 없습니다. iOS 앱에서 Apple Watch 동기화가 활성화됩니다.'}</p><button disabled={!nativeHealth||syncing} onClick={onHealthSync}><Import size={16}/>{syncing?'SYNCING':nativeHealth?'APPLE 건강 동기화':'AVAILABLE IN IOS APP'}</button></div></section>
-    <div className="app-meta"><span>RUNNING / 1.0</span><span>MAPLIBRE + OPENFREEMAP</span><span>{nativeHealth?'HEALTHKIT READY':'PWA READY'}</span></div>
+    <div className="app-meta"><span>SIMPLY RUN / 1.0</span><span>MAPLIBRE + OPENFREEMAP</span><span>{nativeHealth?'HEALTHKIT READY':'PWA READY'}</span></div>
   </div>
 }
 
@@ -188,36 +220,82 @@ function Celebration({ run, onClose }) {
 }
 
 export default function App() {
-  const [runs,setRuns]=useState([]),[routes,setRoutes]=useState(loadSessionRoutes),[tab,setTab]=useState('home')
-  const [activeRouteDate,setActiveRouteDate]=useState(()=>Object.keys(loadSessionRoutes()).sort().at(-1)||null),[routeVersion,setRouteVersion]=useState(0),[autoPlay,setAutoPlay]=useState(false)
+  const [runs,setRuns]=useState([]),[routes,setRoutes]=useState({}),[tab,setTab]=useState('home')
+  const [activeRouteDate,setActiveRouteDate]=useState(null),[routeVersion,setRouteVersion]=useState(0),[autoPlay,setAutoPlay]=useState(false)
   const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[error,setError]=useState(''),[toast,setToast]=useState('')
   const [showAdd,setShowAdd]=useState(false),[celebration,setCelebration]=useState(null)
+  const [adsReady,setAdsReady]=useState(false)
   const nativeHealth=isNativeHealthAvailable()
   const attachInputRef=useRef(null),attachRunRef=useRef(null),mapInputRef=useRef(null)
+  const healthSyncingRef=useRef(false),lastAutoSyncRef=useRef(0)
   const notify=(message)=>{setToast(message);window.setTimeout(()=>setToast(''),2800)}
 
-  const load=async()=>{setLoading(true);setError('');try{setRuns((await getRuns()).map(normalizeRun))}catch(loadError){setError(loadError.message)}finally{setLoading(false)}}
+  useEffect(()=>{let active=true;initializeAds().then((ready)=>{if(active)setAdsReady(ready)});return()=>{active=false}},[])
+  const openAdPrivacy=async()=>{try{await showAdPrivacyOptions()}catch{notify('현재 변경할 광고 개인정보 선택이 없습니다.')}}
+
+  const syncHealth=useCallback(async({silent=false}={})=>{
+    if(!nativeHealth||healthSyncingRef.current)return
+    healthSyncingRef.current=true
+    setSaving(true)
+    if(!silent)setError('')
+    try{
+      const authorization=await authorizeHealthKit()
+      if(!authorization.authorized)throw new Error('Apple 건강 접근 요청을 완료하지 못했습니다.')
+      const [storedRuns,storedRoutes,imported]=await Promise.all([getRuns(),getRoutes(),readHealthKitRuns()])
+      const normalizedStored=storedRuns.map(normalizeRun)
+      const importedRuns=imported.map((item)=>{const run={...item};delete run.coords;return normalizeRun(run)})
+      const nextRoutes={...storedRoutes}
+      imported.forEach((item,index)=>{if(item.coords?.length>1){const run=importedRuns[index];nextRoutes[run.date]={id:`healthkit-${run.id}`,run,coords:item.coords}}})
+      const merged=mergeRuns(normalizedStored,importedRuns)
+      await Promise.all([putRuns(merged.runs),putRoutes(nextRoutes)])
+      setRuns(merged.runs)
+      setRoutes(nextRoutes)
+      setActiveRouteDate((current)=>current||Object.keys(nextRoutes).sort().at(-1)||null)
+      if(!silent){setToast(`${merged.added}개의 Apple Watch 러닝을 동기화했습니다.`);window.setTimeout(()=>setToast(''),2800)}
+    }catch(healthError){if(!silent)setError(healthError.message)}finally{
+      healthSyncingRef.current=false
+      setSaving(false)
+    }
+  },[nativeHealth])
+
+  const load=async()=>{setLoading(true);setError('');try{const [items,savedRoutes]=await Promise.all([getRuns(),getRoutes()]);setRuns(items.map(normalizeRun));setRoutes(savedRoutes);setActiveRouteDate((current)=>current||Object.keys(savedRoutes).sort().at(-1)||null);await syncHealth({silent:false})}catch(loadError){setError(loadError.message)}finally{setLoading(false)}}
   useEffect(()=>{
     let active=true
-    getRuns().then((items)=>{if(active)setRuns(items.map(normalizeRun))}).catch((loadError)=>{if(active)setError(loadError.message)}).finally(()=>{if(active)setLoading(false)})
-    return()=>{active=false}
-  },[])
+    const loadStored=async()=>{
+      try{
+        const [items,savedRoutes]=await Promise.all([getRuns(),getRoutes()])
+        if(!active)return
+        setRuns(items.map(normalizeRun))
+        setRoutes(savedRoutes)
+        setActiveRouteDate(Object.keys(savedRoutes).sort().at(-1)||null)
+      }catch(loadError){if(active)setError(loadError.message)}finally{if(active)setLoading(false)}
+      if(active&&nativeHealth){lastAutoSyncRef.current=Date.now();await syncHealth({silent:true})}
+    }
+    const autoSync=()=>{
+      if(document.visibilityState!=='visible'||Date.now()-lastAutoSyncRef.current<3000)return
+      lastAutoSyncRef.current=Date.now()
+      syncHealth({silent:true})
+    }
+    loadStored()
+    document.addEventListener('visibilitychange',autoSync)
+    window.addEventListener('focus',autoSync)
+    return()=>{active=false;document.removeEventListener('visibilitychange',autoSync);window.removeEventListener('focus',autoSync)}
+  },[nativeHealth,syncHealth])
   const persist=async(nextRuns)=>{setSaving(true);try{await putRuns(nextRuns);setRuns(nextRuns)}finally{setSaving(false)}}
   const saveRun=async(run)=>{const result=mergeRuns(runs,[run]);await persist(result.runs);setShowAdd(false);setCelebration(run)}
   const removeRun=async(run)=>{if(!window.confirm(`${run.date} · ${run.distance.toFixed(2)}km 기록을 삭제할까요?`))return;await persist(runs.filter((item)=>item.id!==run.id))}
-  const storeRoute=(run,coords)=>{const next={...routes,[run.date]:{id:`${run.date}-${Date.now()}`,run,coords}};setRoutes(next);saveSessionRoutes(next);setActiveRouteDate(run.date)}
-  const importGpxFile=async(file,expectedRun=null)=>{const parsed=parseGpx(await readFile(file),file.name);if(expectedRun&&parsed.run.date!==expectedRun.date){const dayGap=Math.abs((new Date(`${parsed.run.date}T12:00:00`)-new Date(`${expectedRun.date}T12:00:00`))/86400000);const distanceGap=Math.abs(parsed.run.distance-expectedRun.distance);if(dayGap>1||distanceGap>Math.max(.25,expectedRun.distance*.05))throw new Error(`GPX 날짜(${parsed.run.date})와 기록 날짜(${expectedRun.date})가 일치하지 않습니다.`)}const matchedRun=expectedRun||parsed.run;storeRoute(matchedRun,parsed.coords);if(!expectedRun){const merged=mergeRuns(runs,[parsed.run]);if(merged.added)await persist(merged.runs)}setError('');setRouteVersion((value)=>value+1);setAutoPlay(Boolean(expectedRun));setTab('map');notify(expectedRun?'경로를 연결했습니다.':'GPX 기록과 경로를 불러왔습니다.')}
+  const storeRoute=async(run,coords)=>{const next={...routes,[run.date]:{id:`${run.date}-${Date.now()}`,run,coords}};setRoutes(next);await putRoutes(next);setActiveRouteDate(run.date)}
+  const importGpxFile=async(file,expectedRun=null)=>{const parsed=parseGpx(await readFile(file),file.name);if(expectedRun&&parsed.run.date!==expectedRun.date){const dayGap=Math.abs((new Date(`${parsed.run.date}T12:00:00`)-new Date(`${expectedRun.date}T12:00:00`))/86400000);const distanceGap=Math.abs(parsed.run.distance-expectedRun.distance);if(dayGap>1||distanceGap>Math.max(.25,expectedRun.distance*.05))throw new Error(`GPX 날짜(${parsed.run.date})와 기록 날짜(${expectedRun.date})가 일치하지 않습니다.`)}const matchedRun=expectedRun||parsed.run;await storeRoute(matchedRun,parsed.coords);if(!expectedRun){const merged=mergeRuns(runs,[parsed.run]);if(merged.added)await persist(merged.runs)}setError('');setRouteVersion((value)=>value+1);setAutoPlay(Boolean(expectedRun));setTab('map');notify(expectedRun?'경로를 연결했습니다.':'GPX 기록과 경로를 불러왔습니다.')}
   const handleGpxImport=async(event)=>{const file=event.target.files?.[0];event.target.value='';if(!file)return;try{await importGpxFile(file)}catch(importError){setError(importError.message)}}
   const handleHealthImport=async(event)=>{const file=event.target.files?.[0];event.target.value='';if(!file)return;setSaving(true);try{const imported=parseAppleHealth(await readFile(file));const merged=mergeRuns(runs,imported);await putRuns(merged.runs);setRuns(merged.runs);notify(`${merged.added}개의 러닝을 가져왔습니다.`)}catch(importError){setError(importError.message)}finally{setSaving(false)}}
   const attachRoute=(run)=>{attachRunRef.current=run;attachInputRef.current?.click()}
   const handleAttach=async(event)=>{const file=event.target.files?.[0];event.target.value='';if(!file||!attachRunRef.current)return;try{await importGpxFile(file,attachRunRef.current)}catch(attachError){setError(attachError.message)}finally{attachRunRef.current=null}}
   const showRoute=(date)=>{setError('');setActiveRouteDate(date);setRouteVersion((value)=>value+1);setAutoPlay(true);setTab('map')}
-  const syncHealth=async()=>{setSaving(true);setError('');try{const authorization=await authorizeHealthKit();if(!authorization.authorized)throw new Error('Apple 건강 접근 요청을 완료하지 못했습니다.');const imported=await readHealthKitRuns();const importedRuns=imported.map((item)=>{const run={...item};delete run.coords;return normalizeRun(run)});const nextRoutes={...routes};imported.forEach((item,index)=>{if(item.coords?.length>1){const run=importedRuns[index];nextRoutes[run.date]={id:`healthkit-${run.id}`,run,coords:item.coords}}});setRoutes(nextRoutes);saveSessionRoutes(nextRoutes);const merged=mergeRuns(runs,importedRuns);await persist(merged.runs);notify(`${merged.added}개의 Apple Watch 러닝을 동기화했습니다.`)}catch(healthError){setError(healthError.message)}finally{setSaving(false)}}
   const saveHealthRun=async(run)=>{setSaving(true);setError('');try{const authorization=await authorizeHealthKit();if(!authorization.authorized)throw new Error('Apple 건강 접근 요청을 완료하지 못했습니다.');const result=await saveRunToHealth(run,routes[run.date]?.coords||[]);notify(result.warning?`운동은 저장했지만 경로는 저장하지 못했습니다: ${result.warning}`:`${run.date} 러닝을 Apple 건강에 저장했습니다.`)}catch(healthError){setError(healthError.message)}finally{setSaving(false)}}
   const activeRoute=activeRouteDate&&routes[activeRouteDate]?{...routes[activeRouteDate],id:`${routes[activeRouteDate].id}-${routeVersion}`}:null
   return <div className="app-shell">
-    <aside className="side-rail"><div className="brand-mark"><span>R</span><strong>RUNNING</strong></div><nav>{TABS.map(({id,label,icon:Icon})=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}><Icon/><span>{label}</span></button>)}</nav><small>MOVE WITH INTENT.</small></aside>
-    <div className="app-main"><header className="topbar"><div className="mobile-brand">RUNNING<span>/03</span></div><div className="topbar-status"><span className={saving?'syncing':''}>{saving?'SYNCING':'SYNCED'}</span><button className="icon-button" onClick={load} aria-label="새로고침"><RefreshCw size={18}/></button></div></header>{error&&<div className="error-banner"><span>{error}</span><button onClick={()=>setError('')}><X size={16}/></button></div>}<main>{loading?<div className="loading-state"><LoaderCircle className="spin"/><span>LOADING YOUR RUNS</span></div>:<>{tab==='home'&&<HomeView runs={runs} routes={routes} onAdd={()=>setShowAdd(true)} onRoute={showRoute}/>} {tab==='log'&&<RunsView runs={runs} routes={routes} onAdd={()=>setShowAdd(true)} onDelete={removeRun} onRoute={showRoute} onAttachRoute={attachRoute} nativeHealth={nativeHealth} onHealthSave={saveHealthRun}/>} {tab==='map'&&<MapView runs={runs} routes={routes} activeRoute={activeRoute} activeRouteDate={activeRouteDate} autoPlay={autoPlay} onSelect={showRoute} onAttach={attachRoute} onImport={()=>mapInputRef.current?.click()}/>} {tab==='insights'&&<InsightsView runs={runs}/>} {tab==='settings'&&<SettingsView onHealthImport={handleHealthImport} onGpxImport={handleGpxImport} syncing={saving} nativeHealth={nativeHealth} onHealthSync={syncHealth}/>}</>}</main></div>
+    <aside className="side-rail"><div className="brand-mark"><span>S</span><strong>SIMPLY RUN</strong></div><nav>{TABS.map(({id,label,icon:Icon})=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}><Icon/><span>{label}</span></button>)}</nav><small>MOVE WITH INTENT.</small></aside>
+    <div className="app-main"><header className="topbar"><div className="mobile-brand">SIMPLY <span>RUN</span></div><div className="topbar-status"><span className={saving?'syncing':''}>{saving?'SYNCING':'SYNCED'}</span><button className="icon-button" onClick={load} aria-label="새로고침"><RefreshCw size={18}/></button></div></header>{error&&<div className="error-banner"><span>{error}</span><button onClick={()=>setError('')}><X size={16}/></button></div>}<main>{loading?<div className="loading-state"><LoaderCircle className="spin"/><span>LOADING YOUR RUNS</span></div>:<>{tab==='home'&&<HomeView runs={runs} routes={routes} onAdd={()=>setShowAdd(true)} onRoute={showRoute} adsReady={adsReady}/>} {tab==='log'&&<RunsView runs={runs} routes={routes} onAdd={()=>setShowAdd(true)} onDelete={removeRun} onRoute={showRoute} onAttachRoute={attachRoute} nativeHealth={nativeHealth} onHealthSave={saveHealthRun}/>} {tab==='map'&&<MapView runs={runs} routes={routes} activeRoute={activeRoute} activeRouteDate={activeRouteDate} autoPlay={autoPlay} onSelect={showRoute} onAttach={attachRoute} onImport={()=>mapInputRef.current?.click()}/>} {tab==='insights'&&<InsightsView runs={runs} adsReady={adsReady}/>} {tab==='settings'&&<SettingsView onHealthImport={handleHealthImport} onGpxImport={handleGpxImport} syncing={saving} nativeHealth={nativeHealth} onHealthSync={syncHealth} onAdPrivacy={openAdPrivacy} adsReady={adsReady}/>}</>}</main></div>
     <nav className="bottom-nav">{TABS.map(({id,label,icon:Icon})=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}><Icon/><span>{label}</span></button>)}</nav>
     <input ref={attachInputRef} hidden type="file" onChange={handleAttach}/><input ref={mapInputRef} hidden type="file" onChange={handleGpxImport}/>{showAdd&&<AddRunSheet onClose={()=>setShowAdd(false)} onSave={saveRun}/>} {celebration&&<Celebration run={celebration} onClose={()=>setCelebration(null)}/>} {toast&&<div className="toast"><MessageCircle size={16}/>{toast}</div>}
   </div>

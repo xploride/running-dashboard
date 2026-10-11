@@ -162,24 +162,6 @@ export function parseAppleHealth(text) {
   }).filter((run) => run.distance > 0)
 }
 
-const ROUTE_SESSION_KEY = 'running-dashboard.routes.v2'
-
-export function loadSessionRoutes() {
-  try {
-    return JSON.parse(sessionStorage.getItem(ROUTE_SESSION_KEY) || '{}')
-  } catch {
-    return {}
-  }
-}
-
-export function saveSessionRoutes(routes) {
-  try {
-    sessionStorage.setItem(ROUTE_SESSION_KEY, JSON.stringify(routes))
-  } catch {
-    // Oversized tracks still remain available in React state for this page session.
-  }
-}
-
 export function mergeRuns(existing, incoming) {
   const keys = new Set(existing.map((run) => `${run.date}:${Math.round(run.distance * 100)}`))
   const additions = incoming.filter((run) => !keys.has(`${run.date}:${Math.round(run.distance * 100)}`))

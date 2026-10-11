@@ -1,6 +1,6 @@
 {
   "appId": "com.xploride.running",
-  "appName": "RUNNING/03",
+  "appName": "Simply Run",
   "webDir": "dist",
   "server": {
     "androidScheme": "https"

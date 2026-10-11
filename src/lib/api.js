@@ -2,6 +2,8 @@ import { Capacitor } from '@capacitor/core'
 import { Preferences } from '@capacitor/preferences'
 
 const NATIVE_RUNS_KEY = 'running-dashboard.runs.v1'
+const NATIVE_ROUTES_KEY = 'running-dashboard.routes.v3'
+const LEGACY_ROUTE_SESSION_KEY = 'running-dashboard.routes.v2'
 const API_ORIGIN = Capacitor.isNativePlatform() ? 'https://running-dashboard-two.vercel.app' : ''
 
 function summaries(runs) {
@@ -42,6 +44,55 @@ export async function putRuns(runs) {
     return { ok: true, count: cleanRuns.length, storage: 'device' }
   }
   return request('', { method: 'PUT', body: JSON.stringify({ runs: cleanRuns }) })
+}
+
+function parseRoutes(value) {
+  if (!value) return {}
+  try {
+    const routes = JSON.parse(value)
+    return routes && typeof routes === 'object' && !Array.isArray(routes) ? routes : {}
+  } catch {
+    return {}
+  }
+}
+
+function legacySessionRoutes() {
+  try {
+    return sessionStorage.getItem(LEGACY_ROUTE_SESSION_KEY)
+  } catch {
+    return null
+  }
+}
+
+export async function getRoutes() {
+  if (Capacitor.isNativePlatform()) {
+    const { value } = await Preferences.get({ key: NATIVE_ROUTES_KEY })
+    if (value) return parseRoutes(value)
+
+    const legacyValue = legacySessionRoutes()
+    if (!legacyValue) return {}
+    await Preferences.set({ key: NATIVE_ROUTES_KEY, value: legacyValue })
+    return parseRoutes(legacyValue)
+  }
+
+  try {
+    const value = localStorage.getItem(NATIVE_ROUTES_KEY) || legacySessionRoutes()
+    if (value) localStorage.setItem(NATIVE_ROUTES_KEY, value)
+    return parseRoutes(value)
+  } catch {
+    return parseRoutes(legacySessionRoutes())
+  }
+}
+
+export async function putRoutes(routes) {
+  const value = JSON.stringify(routes || {})
+  if (Capacitor.isNativePlatform()) {
+    await Preferences.set({ key: NATIVE_ROUTES_KEY, value })
+    return { ok: true, storage: 'device' }
+  }
+
+  localStorage.setItem(NATIVE_ROUTES_KEY, value)
+  return { ok: true, storage: 'browser' }
 }
 
 export async function askCoach(message, runs) {

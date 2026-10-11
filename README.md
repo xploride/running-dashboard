@@ -1,4 +1,4 @@
-# Running / Move with intent
+# Simply Run / Move with intent
 
 모바일 우선 러닝 대시보드이자 App Store용 iOS 앱입니다. 웹에서는 러닝 요약을 JSONBin에 저장하고, iOS 앱에서는 사용자 기기에만 저장합니다. GPX 및 운동 경로 좌표는 서버로 보내지 않고 현재 세션에만 보관합니다. 지도는 MapLibre GL JS와 OpenFreeMap을 사용합니다.
 
