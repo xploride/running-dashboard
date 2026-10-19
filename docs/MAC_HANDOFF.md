@@ -29,7 +29,7 @@ npm run ios:open
 2. Bundle Identifier가 App Store Connect의 App ID와 일치하는지 확인한다.
 3. HealthKit capability와 `App.entitlements`가 적용됐는지 확인한다.
 4. 실제 iPhone에서 Apple 건강 권한, Apple Watch 러닝 가져오기, GPX 운동 저장과 경로 저장을 테스트한다.
-5. 버전 `1.0.0`, 빌드 `2`를 확인한다.
+5. 버전 `1.0.1`, 빌드 `4`를 확인한다.
 6. Product > Archive > Validate App을 실행한다.
 7. App Store Connect에 업로드하고 TestFlight에서 설치·검증한다.
 8. `docs/APP_STORE_RELEASE.md`의 메타데이터와 개인정보 응답을 사용해 심사를 제출한다.
